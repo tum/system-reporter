@@ -1,0 +1,2 @@
+providers:
+  - Tum\SystemReporter\SystemReporterServiceProvider

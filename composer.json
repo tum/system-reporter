@@ -1,0 +1,45 @@
+{
+    "name": "tum/system-reporter",
+    "description": "Meldet System- und Patchstand einer Laravel-Anwendung (tum.system-report/v2) an das IT-Inventar des TUM IT-Portals. Läuft auf Shared Webhosting ohne Agent und ohne CI.",
+    "type": "library",
+    "license": "proprietary",
+    "require": {
+        "php": "^8.2",
+        "illuminate/console": "^11.0|^12.0|^13.0",
+        "illuminate/http": "^11.0|^12.0|^13.0",
+        "illuminate/support": "^11.0|^12.0|^13.0"
+    },
+    "require-dev": {
+        "laravel/pint": "^1.18",
+        "larastan/larastan": "^3.0",
+        "orchestra/testbench": "^9.0|^10.0|^11.0",
+        "phpunit/phpunit": "^11.0|^12.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Tum\\SystemReporter\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Tum\\SystemReporter\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Tum\\SystemReporter\\SystemReporterServiceProvider"
+            ]
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "lint": "pint --test",
+        "analyse": "phpstan analyse --memory-limit=512M"
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
