@@ -34,7 +34,7 @@ oft eine andere Version als im Web (PHP-FPM). Eine kleine Middleware in der
 
 ## Installation
 
-Das Repo ist privat. In der `composer.json` der App eintragen:
+Das Paket liegt nicht auf Packagist. In der `composer.json` der App eintragen:
 
 ```json
 "repositories": [
@@ -46,14 +46,7 @@ Das Repo ist privat. In der `composer.json` der App eintragen:
 composer require tum/system-reporter:^2.0
 ```
 
-Auf dem Server braucht Composer Lesezugriff auf das Repo. Am einfachsten geht
-das über einen fein granulierten GitHub-Token, der nur `tum/system-reporter`
-lesen darf (Contents: read), hinterlegt in `auth.json` neben der
-`composer.json`, nicht im Git:
-
-```json
-{ "github-oauth": { "github.com": "github_pat_…" } }
-```
+Das Repo ist öffentlich, Composer braucht also keine Zugangsdaten.
 
 Dann im Portal unter **IT-Systeme → System → Melde-Tokens** ein Token erzeugen
 und in die `.env` der App eintragen:
