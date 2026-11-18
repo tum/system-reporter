@@ -16,6 +16,7 @@ class PackageCollectorTest extends TestCase
             'packages' => [
                 ['name' => 'laravel/framework', 'version' => 'v13.1.0', 'dist' => ['url' => 'https://secret.example/x']],
                 ['name' => 'phpunit/phpunit', 'version' => '12.0.0'],
+                ['name' => 'acme/branch', 'version' => 'dev-feature/JIRA-1234-implement-new-login-flow-for-external-users'],
             ],
             'dev' => true,
             'dev-package-names' => ['phpunit/phpunit'],
@@ -52,6 +53,7 @@ class PackageCollectorTest extends TestCase
             'dependencies' => [
                 'jquery' => ['version' => '3.7.1'],
                 'mocha' => ['version' => '10.0.0', 'dev' => true],
+                'gitdep' => ['version' => 'git+https://github.com/org/repo.git#'.str_repeat('a', 40)],
                 'x' => ['version' => '1.0.0', 'dependencies' => ['y' => ['version' => '2.0.0']]],
             ],
         ]));

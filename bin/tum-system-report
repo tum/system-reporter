@@ -47,6 +47,16 @@ done
 
 errors=()
 
+# Kürzen (${s:0:n}) zählt im C-Locale Bytes und könnte einen Umlaut halbieren
+# — ungültiges UTF-8. Cron setzt meist kein LANG: dann ein UTF-8-Locale wählen,
+# falls vorhanden. Paketmanager laufen ohnehin mit eigenem LC_ALL=C.
+for candidate in C.UTF-8 C.utf8 en_US.UTF-8 en_US.utf8; do
+    if locale -a 2>/dev/null | grep -qx "$candidate"; then
+        export LC_ALL="$candidate"
+        break
+    fi
+done
+
 # --- JSON-Helfer ---------------------------------------------------------
 
 # JSON-String inklusive Anführungszeichen; Steuerzeichen fallen weg.
@@ -162,26 +172,26 @@ patch_apt() {
 }
 
 patch_dnf() {
-    local output status pending=0 security=0 reboot=null line
-    # check-update: Exit 100 = Updates vorhanden, 0 = keine, sonst Fehler.
+    local output status pending=0 security=0 reboot=null
+    # repoquery statt check-update: eine Zeile je Paket, ohne Umbrüche bei
+    # langen Namen und ohne "Obsoleting"-Block (dnf 4 und dnf 5).
     set +e
-    output="$("$DNF" -q check-update 2>/dev/null)"
+    output="$(LC_ALL=C "$DNF" -q repoquery --upgrades --qf '%{name}.%{arch}\n' 2>/dev/null)"
     status=$?
     set -e
-    if [ "$status" -ne 0 ] && [ "$status" -ne 100 ]; then
-        errors+=("os.patch: dnf check-update exit $status")
+    if [ "$status" -ne 0 ]; then
+        errors+=("os.patch: dnf repoquery exit $status")
         return 0
     fi
-    while IFS= read -r line; do
-        # Paketzeilen: "name.arch  version  repo"; "Obsoleting"-Block ignorieren.
-        case "$line" in
-            ''|' '*|Obsoleting*|Security:*) ;;
-            *.*' '*) pending=$((pending + 1)) ;;
-        esac
-    done <<< "$output"
+    pending="$(printf '%s\n' "$output" | grep -v '^[[:space:]]*$' | sort -u | wc -l | tr -d ' ')"
 
-    if output="$("$DNF" -q updateinfo list --security --updates 2>/dev/null)"; then
-        security="$(printf '%s\n' "$output" | grep -c . || true)"
+    if output="$(LC_ALL=C "$DNF" -q updateinfo list --security --updates 2>/dev/null)"; then
+        # Eine Zeile je Advisory und Paket; gezählt werden Pakete. Die Spalte
+        # unterscheidet sich (dnf 4: 3., dnf 5: 4.), darum das Feld nehmen,
+        # das wie name-version.arch aussieht — Kopfzeile und Datum nicht.
+        security="$(printf '%s\n' "$output" \
+            | awk '{ for (i = 2; i <= NF; i++) if ($i ~ /-[0-9][^ ]*\.[A-Za-z0-9_]+$/) { print $i; break } }' \
+            | sort -u | wc -l | tr -d ' ')"
     else
         errors+=("os.patch: dnf updateinfo failed")
         security=""

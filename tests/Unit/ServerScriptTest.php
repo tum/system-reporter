@@ -95,6 +95,47 @@ class ServerScriptTest extends TestCase
         $this->assertSame(['os.patch: apt-get failed'], $payload['collect_errors']);
     }
 
+    public function test_dnf_counts_packages_once(): void
+    {
+        // repoquery: eine Zeile je Paket, auch bei mehreren Architekturen doppelt
+        file_put_contents($this->root.'/bin/dnf', <<<'SH'
+#!/bin/sh
+case "$*" in
+  *repoquery*) printf 'kernel-core.x86_64\nopenssl-libs.x86_64\nopenssl-libs.x86_64\nvery-long-package-name-that-dnf-would-wrap.noarch\n' ;;
+  *updateinfo*) if [ -n "$DNF5" ]; then
+      printf 'Name Type Severity Package Issued\nRHSA-2026:1 security Important openssl-libs-3.0.7-28.el9.x86_64 2026-01-01\nRHSA-2026:2 security Moderate openssl-libs-3.0.7-28.el9.x86_64 2026-01-02\n'
+    else
+      printf 'RHSA-2026:1 Important/Sec. openssl-libs-1:3.0.7-28.el9.x86_64\nRHSA-2026:3 Moderate/Sec. kernel-core-5.14.0-503.el9.x86_64\n'
+    fi ;;
+  *) exit 1 ;;
+esac
+SH);
+        chmod($this->root.'/bin/dnf', 0755);
+
+        foreach (['' => 2, '1' => 1] as $dnf5 => $security) {
+            $result = $this->runScript(['--dry-run'], [
+                'TUM_SYSTEM_REPORT_APT_GET' => '',
+                'TUM_SYSTEM_REPORT_DNF' => $this->root.'/bin/dnf',
+                'DNF5' => (string) $dnf5,
+            ]);
+            $payload = json_decode($result['stdout'], true, 512, JSON_THROW_ON_ERROR);
+
+            $this->assertSame('dnf', $payload['os']['patch']['source']);
+            $this->assertSame(3, $payload['os']['patch']['pending']);
+            $this->assertSame($security, $payload['os']['patch']['security_pending'], $dnf5 === '' ? 'dnf 4' : 'dnf 5');
+        }
+    }
+
+    public function test_truncation_keeps_utf8_valid_without_lang(): void
+    {
+        file_put_contents($this->root.'/etc/os-release', 'PRETTY_NAME="'.str_repeat('a', 149).'äöü"'."\nID=debian\n");
+
+        $result = $this->runScript(['--dry-run'], ['LANG' => '', 'LC_ALL' => '']);
+        $payload = json_decode($result['stdout'], true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertSame(str_repeat('a', 149).'ä', $payload['os']['pretty_name']);
+    }
+
     public function test_refuses_missing_token_and_plain_http(): void
     {
         $result = $this->runScript([], ['TUM_SYSTEM_REPORT_TOKEN' => '']);

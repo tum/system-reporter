@@ -129,11 +129,25 @@ class PackageCollector
     }
 
     /**
+     * Nur prüfbare Versionen: "1.2.3", "v1.2.3", "2.0.0-beta.1". Branch-
+     * Stände ("dev-main", "1.x-dev") und Git-/Datei-Quellen
+     * ("git+https://…", "file:../x") lassen sich nicht gegen Versionsbereiche
+     * abgleichen und machen den Report nur größer.
+     */
+    public static function isCheckable(string $name, string $version): bool
+    {
+        return $name !== '' && strlen($name) <= 214 && strlen($version) <= 64
+            && preg_match('/^v?\d+(\.\d+)*([-+.][0-9A-Za-z.+-]*)?$/', $version) === 1
+            && ! str_ends_with($version, '-dev');
+    }
+
+    /**
      * @param  list<array{name: string, version: string}>  $packages
      * @return list<array{name: string, version: string}>
      */
     private static function limit(array $packages): array
     {
+        $packages = array_values(array_filter($packages, fn (array $p) => self::isCheckable($p['name'], $p['version'])));
         usort($packages, fn (array $a, array $b) => [$a['name'], $a['version']] <=> [$b['name'], $b['version']]);
 
         return array_slice($packages, 0, self::MAX_PER_ECOSYSTEM);
