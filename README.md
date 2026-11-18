@@ -106,7 +106,9 @@ composer lint      # Pint
 composer analyse   # PHPStan Level 8 (Larastan)
 ```
 
-CI prüft PHP 8.2–8.5 gegen Laravel 11, 12 und 13.
+CI prüft PHP 8.2–8.5 gegen Laravel 12 und 13. Laravel 11 wird nicht
+unterstützt: Die Linie ist EOL, und Composer blockiert alle 11.x-Versionen
+wegen offener Sicherheitslücken.
 
 ## Änderungen gegenüber dem ersten Entwurf (v1)
 
