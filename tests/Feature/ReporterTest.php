@@ -46,6 +46,17 @@ class ReporterTest extends TestCase
         $this->assertStringNotContainsString('SECRETDBPASSWORD', $json);
     }
 
+    public function test_packages_can_be_switched_off(): void
+    {
+        $this->assertContains('packages', app(Reporter::class)->payload()['reporter']['capabilities']);
+
+        config(['system-reporter.packages' => false]);
+        $payload = app(Reporter::class)->payload();
+
+        $this->assertNotContains('packages', $payload['reporter']['capabilities']);
+        $this->assertArrayNotHasKey('packages', $payload);
+    }
+
     public function test_push_sends_bearer_token_and_payload(): void
     {
         Http::fake(['portal.test/*' => Http::response(['status' => 'accepted', 'system_id' => 7, 'stored' => true], 202)]);

@@ -55,4 +55,5 @@ jobs:
       - run: composer validate --strict
       - run: composer install --prefer-dist --no-interaction --no-progress
       - run: vendor/bin/pint --test
+      - run: shellcheck bin/tum-system-report
       - run: vendor/bin/phpstan analyse --memory-limit=512M
