@@ -36,6 +36,8 @@ class RuntimeCollector
         $web = RecordWebRuntime::read();
         if ($web !== null) {
             $runtime['web_php'] = $web;
+        } elseif (config('system-reporter.record_web_runtime')) {
+            $errors->add('runtime.web_php', 'no recent web request recorded');
         }
 
         return $runtime;
@@ -84,7 +86,7 @@ class RuntimeCollector
             $version = preg_replace('/^5\.5\.5-/', '', $raw) ?? $raw;
             preg_match('/^\d+(\.\d+){0,2}/', $version, $m);
 
-            return ['product' => 'mariadb', 'version' => $m[0] ?? $version];
+            return ['product' => 'mariadb', 'version' => mb_substr($m[0] ?? $version, 0, 50)];
         }
 
         $product = match ($driver) {
@@ -94,6 +96,6 @@ class RuntimeCollector
         };
         preg_match('/^\d+(\.\d+){0,2}/', $raw, $m);
 
-        return ['product' => $product, 'version' => $m[0] ?? $raw];
+        return ['product' => mb_substr($product, 0, 30), 'version' => mb_substr($m[0] ?? $raw, 0, 50)];
     }
 }

@@ -16,7 +16,7 @@ return [
     /*
      | Zeitplan. Erfordert den üblichen Cron für "php artisan schedule:run".
      | Ohne feste Zeit wählt das Paket je Installation eine Minute zwischen
-     | 02:00 und 05:59 (aus app.url abgeleitet), damit nicht alle Systeme
+     | 03:00 und 05:59 (aus app.url abgeleitet), damit nicht alle Systeme
      | gleichzeitig melden.
      */
     'schedule' => [

@@ -18,6 +18,7 @@ abstract class TestCase extends Orchestra
         $app['config']->set('app.key', 'base64:'.base64_encode(str_repeat('k', 32)));
         $app['config']->set('app.url', 'https://app.example.tum.de');
         $app['config']->set('app.name', 'Test-App');
+        $app['config']->set('app.debug', false);
         $app['config']->set('system-reporter.enabled', true);
         $app['config']->set('system-reporter.token', 'itps_testtoken');
         $app['config']->set('system-reporter.url', 'https://portal.test/interface/systems/report');

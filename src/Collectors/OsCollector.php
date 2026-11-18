@@ -26,11 +26,16 @@ class OsCollector
      */
     public function collect(ErrorBag $errors, bool $withPatch): array
     {
-        $os = [
-            'family' => PHP_OS_FAMILY,
-            'kernel' => php_uname('r'),
-            'machine' => php_uname('m'),
-        ];
+        $os = ['family' => PHP_OS_FAMILY];
+
+        // php_uname steht auf vielen Shared Hosts in disable_functions; ein
+        // Aufruf wirft dann seit PHP 8 einen Error statt false zu liefern.
+        if (function_exists('php_uname')) {
+            $os['kernel'] = mb_substr(php_uname('r'), 0, 100);
+            $os['machine'] = php_uname('m');
+        } else {
+            $errors->add('os.kernel', 'php_uname disabled');
+        }
 
         $release = @file_get_contents($this->root.'/etc/os-release');
         if ($release === false) {
@@ -38,7 +43,7 @@ class OsCollector
         } else {
             foreach (['ID' => 'id', 'VERSION_ID' => 'version_id', 'PRETTY_NAME' => 'pretty_name'] as $key => $field) {
                 if (preg_match('/^'.$key.'="?([^"\n]*)"?$/m', $release, $m)) {
-                    $os[$field] = $m[1];
+                    $os[$field] = mb_substr($m[1], 0, $field === 'pretty_name' ? 150 : 50);
                 }
             }
         }
@@ -65,13 +70,17 @@ class OsCollector
 
             return null;
         }
-        if (! is_file($this->root.'/usr/bin/apt-get')) {
+        // @: mit open_basedir wirft is_file() eine Warnung, die Laravel zur
+        // Exception macht — und der ganze Report ginge verloren.
+        if (! @is_file($this->root.'/usr/bin/apt-get')) {
             $errors->add('os.patch', 'unsupported package manager'.($osId ? ' ('.$osId.')' : ''));
 
             return null;
         }
 
-        $result = $this->runner->run('LC_ALL=C apt-get -s -o Debug::NoLocking=1 upgrade');
+        // dist-upgrade statt upgrade: Kernel-Sicherheitsupdates kommen auf
+        // Ubuntu als neue Pakete und würden bei "upgrade" zurückgehalten.
+        $result = $this->runner->run('LC_ALL=C apt-get -s -o Debug::NoLocking=1 dist-upgrade');
         if ($result === null) {
             $errors->add('os.patch', 'exec disabled');
 
@@ -100,7 +109,7 @@ class OsCollector
             'source' => 'apt',
             'pending' => $pending,
             'security_pending' => $security,
-            'reboot_required' => is_file($this->root.'/var/run/reboot-required'),
+            'reboot_required' => $this->rebootRequired(),
         ];
 
         foreach (['/var/log/apt/history.log', '/var/lib/dpkg/status'] as $file) {
@@ -112,5 +121,19 @@ class OsCollector
         }
 
         return $patch;
+    }
+
+    /**
+     * /var/run/reboot-required legt nur update-notifier an (Ubuntu, auf
+     * Debian optional). Ohne diesen Mechanismus heißt "keine Datei" nicht
+     * "kein Neustart nötig", sondern "unbekannt".
+     */
+    private function rebootRequired(): ?bool
+    {
+        if (@is_file($this->root.'/var/run/reboot-required')) {
+            return true;
+        }
+
+        return @is_dir($this->root.'/usr/share/update-notifier') ? false : null;
     }
 }

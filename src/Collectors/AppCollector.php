@@ -18,7 +18,7 @@ class AppCollector
     public function collect(ErrorBag $errors): array
     {
         return array_filter([
-            'name' => (string) config('app.name'),
+            'name' => mb_substr((string) config('app.name'), 0, 150),
             'version' => $this->version(),
             'framework' => ['name' => 'laravel', 'version' => app()->version()],
             'dependency_fingerprint' => $this->fingerprint(),
@@ -45,7 +45,8 @@ class AppCollector
         $parts = [];
         foreach (['vendor/composer/installed.json', 'package-lock.json'] as $file) {
             $path = base_path($file);
-            $parts[] = is_file($path) ? (string) hash_file('sha256', $path) : '-';
+            $hash = @is_file($path) ? @hash_file('sha256', $path) : false;
+            $parts[] = $hash === false ? '-' : $hash;
         }
         if ($parts === ['-', '-']) {
             return null;

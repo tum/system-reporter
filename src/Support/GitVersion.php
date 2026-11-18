@@ -29,16 +29,16 @@ class GitVersion
         }
 
         $ref = trim(substr($head, 5));
-        $loose = @file_get_contents($gitDir.'/'.$ref);
-        if ($loose !== false) {
-            return self::short(trim($loose));
-        }
 
-        // Worktrees teilen packed-refs mit dem Haupt-Repo (commondir).
-        foreach ([$gitDir, self::commonDir($gitDir)] as $dir) {
-            if ($dir === null) {
-                continue;
+        // Worktrees: Branch-Refs liegen im Haupt-Repo (commondir), lose wie gepackt.
+        $dirs = array_values(array_filter([$gitDir, self::commonDir($gitDir)]));
+        foreach ($dirs as $dir) {
+            $loose = @file_get_contents($dir.'/'.$ref);
+            if ($loose !== false) {
+                return self::short(trim($loose));
             }
+        }
+        foreach ($dirs as $dir) {
             $packed = @file($dir.'/packed-refs', FILE_IGNORE_NEW_LINES);
             foreach ($packed ?: [] as $line) {
                 if (preg_match('/^([0-9a-f]{40,64}) (.+)$/', $line, $m) && $m[2] === $ref) {
@@ -53,10 +53,10 @@ class GitVersion
     private static function gitDir(string $basePath): ?string
     {
         $path = rtrim($basePath, '/').'/.git';
-        if (is_dir($path)) {
+        if (@is_dir($path)) {
             return $path;
         }
-        if (is_file($path)) {
+        if (@is_file($path)) {
             $content = (string) @file_get_contents($path);
             if (preg_match('/^gitdir: (.+)$/m', $content, $m)) {
                 $dir = trim($m[1]);

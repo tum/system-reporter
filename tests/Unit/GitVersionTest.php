@@ -60,6 +60,22 @@ class GitVersionTest extends TestCase
         $this->assertSame('9380a5cf0123', GitVersion::read($wt));
     }
 
+    public function test_worktree_prefers_loose_ref_in_common_dir_over_stale_packed_ref(): void
+    {
+        $main = $this->repo();
+        mkdir($main.'/.git/worktrees/wt', 0777, true);
+        file_put_contents($main.'/.git/worktrees/wt/HEAD', "ref: refs/heads/feature\n");
+        file_put_contents($main.'/.git/worktrees/wt/commondir', "../..\n");
+        file_put_contents($main.'/.git/packed-refs', str_repeat('b', 40)." refs/heads/feature\n");
+        file_put_contents($main.'/.git/refs/heads/feature', self::SHA."\n");
+
+        $wt = sys_get_temp_dir().'/gv-wt-'.bin2hex(random_bytes(6));
+        mkdir($wt);
+        file_put_contents($wt.'/.git', 'gitdir: '.$main."/.git/worktrees/wt\n");
+
+        $this->assertSame('9380a5cf0123', GitVersion::read($wt));
+    }
+
     public function test_returns_null_for_unknown_ref_or_missing_repo(): void
     {
         $dir = $this->repo();

@@ -70,6 +70,19 @@ class OsCollectorTest extends TestCase
         $this->assertSame([], $errors->all());
     }
 
+    public function test_reboot_state_is_unknown_without_update_notifier(): void
+    {
+        $runner = $this->runner(['exit' => 0, 'output' => []]);
+
+        $root = $this->root();
+        $os = (new OsCollector($runner, $root))->collect(new ErrorBag, true);
+        $this->assertNull($os['patch']['reboot_required']);
+
+        mkdir($root.'/usr/share/update-notifier', 0777, true);
+        $os = (new OsCollector($runner, $root))->collect(new ErrorBag, true);
+        $this->assertFalse($os['patch']['reboot_required']);
+    }
+
     public function test_exec_disabled_is_reported_not_fatal(): void
     {
         $errors = new ErrorBag;

@@ -17,6 +17,9 @@ class RecordWebRuntime
 {
     private const MAX_AGE = 86400;
 
+    /** Ältere Beobachtungen meldet der Reporter nicht mehr als aktuell. */
+    private const STALE_AFTER = 7 * 86400;
+
     public function handle(Request $request, Closure $next): Response
     {
         $response = $next($request);
@@ -44,6 +47,13 @@ class RecordWebRuntime
      */
     public static function read(): ?array
     {
+        if (! config('system-reporter.record_web_runtime')) {
+            return null;
+        }
+        $mtime = @filemtime(self::path());
+        if ($mtime === false || $mtime < time() - self::STALE_AFTER) {
+            return null;
+        }
         $raw = @file_get_contents(self::path());
         if ($raw === false) {
             return null;
@@ -53,13 +63,31 @@ class RecordWebRuntime
         return is_array($data) ? $data : null;
     }
 
+    private static function iniFlag(string $name): bool
+    {
+        $value = function_exists('get_cfg_var') ? get_cfg_var($name) : false;
+        if ($value === false) {
+            $value = ini_get($name);
+        }
+
+        // display_errors kann auch "stderr"/"stdout" sein — beides zeigt Fehler.
+        if (! is_string($value)) {
+            return false;
+        }
+
+        return in_array(strtolower(trim($value)), ['1', 'on', 'yes', 'true', 'stdout', 'stderr'], true);
+    }
+
     private static function write(string $file): void
     {
         $data = [
             'version' => PHP_VERSION,
             'sapi' => PHP_SAPI,
-            'display_errors' => filter_var(ini_get('display_errors'), FILTER_VALIDATE_BOOLEAN),
-            'expose_php' => filter_var(ini_get('expose_php'), FILTER_VALIDATE_BOOLEAN),
+            // Wert aus der php.ini, nicht ini_get(): Laravel schaltet
+            // display_errors beim Booten per ini_set ab, ini_get() wäre also
+            // immer false.
+            'display_errors' => self::iniFlag('display_errors'),
+            'expose_php' => self::iniFlag('expose_php'),
             'observed_at' => gmdate('Y-m-d\TH:i:s\Z'),
         ];
 

@@ -46,18 +46,22 @@ class SystemReporterServiceProvider extends ServiceProvider
 
         // Über den HTTP-Kernel, nicht den Router: der Kernel überschreibt
         // die Router-Gruppen, wenn er erst nach diesem Boot entsteht.
-        if (config('system-reporter.record_web_runtime')) {
+        // Nur für Web-Requests nötig; in der Konsole (schedule:run jede Minute)
+        // würde sonst jedes Mal der HTTP-Kernel gebaut.
+        $webContext = ! $this->app->runningInConsole() || $this->app->runningUnitTests();
+        if (config('system-reporter.record_web_runtime') && $webContext) {
             /** @var mixed $kernel Apps können einen eigenen Kernel binden. */
             $kernel = $this->app->make(HttpKernel::class);
-            if ($kernel instanceof Kernel) {
+            if ($kernel instanceof Kernel && array_key_exists('web', $kernel->getMiddlewareGroups())) {
                 $kernel->appendMiddlewareToGroup('web', RecordWebRuntime::class);
             }
         }
     }
 
     /**
-     * Feste Zeit aus der Config, sonst eine stabile Minute zwischen 02:00
-     * und 05:59 je Installation — verteilt die Last auf dem Portal.
+     * Feste Zeit aus der Config, sonst eine stabile Minute zwischen 03:00
+     * und 05:59 je Installation — verteilt die Last auf dem Portal. Nicht
+     * 02:xx: die Stunde fällt bei der Umstellung auf Sommerzeit aus.
      */
     public static function scheduleTime(): string
     {
@@ -66,8 +70,8 @@ class SystemReporterServiceProvider extends ServiceProvider
             return $configured;
         }
 
-        $minutes = crc32(config('app.url').'|'.config('app.name')) % 240;
+        $minutes = crc32(config('app.url').'|'.config('app.name')) % 180;
 
-        return sprintf('%02d:%02d', 2 + intdiv($minutes, 60), $minutes % 60);
+        return sprintf('%02d:%02d', 3 + intdiv($minutes, 60), $minutes % 60);
     }
 }

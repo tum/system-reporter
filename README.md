@@ -18,8 +18,8 @@ Einmal täglich ein Heartbeat im Format `tum.system-report/v2`:
 | `instance` | Hostname, `APP_ENV`, `APP_URL` |
 | `app` | Name, Version (`APP_VERSION` oder Commit aus `.git`), Laravel-Version, Fingerprint von `vendor/composer/installed.json` und `package-lock.json`, offene Migrationen |
 | `runtime` | PHP-Version, SAPI und Extensions; Datenbank (Produkt + Version, MariaDB normalisiert); OpenSSL, cURL, ICU; `web_php`: PHP-Version im Web-Kontext |
-| `os` | `/etc/os-release`, Kernel, Uptime; `patch`: ausstehende Updates und Sicherheitsupdates (`apt-get -s upgrade`), Neustart nötig, letztes Update |
-| `signals` | `debug`, `https`, `secure_cookie`; aus dem Web-Kontext zusätzlich `display_errors`, `expose_php` |
+| `os` | `/etc/os-release`, Kernel, Uptime; `patch`: ausstehende Updates und Sicherheitsupdates (`apt-get -s dist-upgrade`, zählt auch neue Kernel-Pakete), Neustart nötig (`null` = unbekannt, wenn das System keinen update-notifier hat), letztes Update |
+| `signals` | `debug`, `https`, `secure_cookie`; aus dem Web-Kontext zusätzlich `display_errors`, `expose_php` (Werte aus der php.ini) |
 | `collect_errors` | was nicht auslesbar war, z. B. `os.patch: exec disabled` |
 
 Nicht gemeldet werden Secrets, Umgebungsvariablen oder personenbezogene Daten
@@ -57,7 +57,7 @@ SYSTEM_REPORTER_TOKEN=itps_…
 # optional:
 SYSTEM_REPORTER_URL=https://portal.it.tum.de/interface/systems/report
 APP_VERSION=          # z. B. vom Deploy gesetzt; leer: Commit aus .git
-SYSTEM_REPORTER_TIME= # feste Uhrzeit "HH:MM"; leer: stabile Minute 02:00–05:59
+SYSTEM_REPORTER_TIME= # feste Uhrzeit "HH:MM"; leer: stabile Minute 03:00–05:59
 ```
 
 Voraussetzung ist der übliche Cron für den Laravel-Scheduler:
@@ -72,6 +72,9 @@ Voraussetzung ist der übliche Cron für den Laravel-Scheduler:
 php artisan system-reporter:report --dry-run   # Payload anzeigen, nichts senden
 php artisan system-reporter:report             # jetzt melden
 ```
+
+`SYSTEM_REPORTER_URL` muss `https://` sein (`http://` nur für localhost);
+Redirects werden nicht verfolgt.
 
 Bei Fehlern meldet der Befehl den HTTP-Status und die Antwort des Portals,
 z. B. `HTTP 401: unauthorized` (Token falsch oder gesperrt) oder
@@ -109,6 +112,8 @@ wegen offener Sicherheitslücken.
 - neu: `os.patch`, `runtime.web_php`, `collect_errors`, `reporter.context`
 - Version aus `.git` auch bei `packed-refs`, detached HEAD und Worktrees
 - MariaDB-Version normalisiert (`5.5.5-10.11.6-MariaDB` → `10.11.6`)
-- Meldezeit je Installation gestreut statt fest 04:17
+- Meldezeit je Installation gestreut (03:00–05:59) statt fest 04:17
+- robust auf Shared Hosting: `open_basedir`, gesperrtes `exec`/`php_uname`
+  führen zu `collect_errors`-Einträgen statt zum Abbruch
 - Dependency-Track-Upload und Pull-Modus entfallen vorerst: das Portal hat
   dafür noch keine Gegenstelle (folgt mit der SBOM-Auswertung)

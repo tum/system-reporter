@@ -114,7 +114,7 @@ class ReporterTest extends TestCase
     public function test_schedule_uses_stable_spread_time(): void
     {
         $time = SystemReporterServiceProvider::scheduleTime();
-        $this->assertMatchesRegularExpression('/^0[2-5]:[0-5]\d$/', $time);
+        $this->assertMatchesRegularExpression('/^0[3-5]:[0-5]\d$/', $time);
         $this->assertSame($time, SystemReporterServiceProvider::scheduleTime());
 
         config(['system-reporter.schedule.time' => '04:17']);
@@ -130,6 +130,53 @@ class ReporterTest extends TestCase
             ->filter(fn ($e) => str_contains((string) $e->command, 'system-reporter:report'));
 
         $this->assertCount(1, $events);
+    }
+
+    public function test_refuses_plain_http_except_localhost(): void
+    {
+        Http::fake();
+        config(['system-reporter.url' => 'http://portal.it.tum.de/interface/systems/report']);
+
+        $this->artisan('system-reporter:report')->expectsOutputToContain('https')->assertFailed();
+        Http::assertNothingSent();
+
+        $this->assertTrue(Reporter::isSafeUrl('http://localhost:8000/interface/systems/report'));
+        $this->assertFalse(Reporter::isSafeUrl('ftp://portal.test/x'));
+    }
+
+    public function test_non_accepted_2xx_is_a_failure(): void
+    {
+        Http::fake(['portal.test/*' => Http::response('<html>Wartung</html>', 200)]);
+
+        $this->artisan('system-reporter:report')
+            ->expectsOutputToContain('Unerwartete Antwort')
+            ->assertFailed();
+    }
+
+    public function test_redirects_are_not_followed(): void
+    {
+        Http::fake(['portal.test/*' => Http::response('', 301, ['Location' => 'https://elsewhere.test/'])]);
+
+        $this->artisan('system-reporter:report')->expectsOutputToContain('HTTP 301')->assertFailed();
+        Http::assertSentCount(1);
+    }
+
+    public function test_invalid_utf8_does_not_break_sending(): void
+    {
+        config(['app.name' => "Lehrstuhl f\xfcr Test"]);
+        Http::fake(['portal.test/*' => Http::response(['status' => 'accepted', 'system_id' => 1, 'stored' => true], 202)]);
+
+        $this->artisan('system-reporter:report')->assertSuccessful();
+    }
+
+    public function test_stale_web_runtime_is_not_reported(): void
+    {
+        file_put_contents(RecordWebRuntime::path(), (string) json_encode(['version' => '8.1.0']));
+        touch(RecordWebRuntime::path(), time() - 8 * 86400);
+
+        $payload = app(Reporter::class)->payload();
+        $this->assertArrayNotHasKey('web_php', $payload['runtime']);
+        $this->assertContains('runtime.web_php: no recent web request recorded', $payload['collect_errors']);
     }
 
     public function test_web_runtime_is_recorded_and_reported(): void

@@ -22,7 +22,7 @@ class Reporter
 {
     public const SCHEMA = 'tum.system-report/v2';
 
-    public const VERSION = '2.0.0';
+    public const VERSION = '2.0.1';
 
     public function __construct(
         private AppCollector $app,
@@ -51,9 +51,9 @@ class Reporter
                 ])),
             ],
             'instance' => array_filter([
-                'hostname' => gethostname() ?: null,
-                'environment' => app()->environment(),
-                'base_url' => (string) config('app.url') ?: null,
+                'hostname' => function_exists('gethostname') ? (mb_substr((string) gethostname(), 0, 255) ?: null) : null,
+                'environment' => mb_substr((string) app()->environment(), 0, 20),
+                'base_url' => mb_substr((string) config('app.url'), 0, 255) ?: null,
             ]),
             'app' => $this->app->collect($errors),
             'runtime' => $this->runtime->collect($errors),
@@ -104,16 +104,25 @@ class Reporter
         if ($url === '' || $token === '') {
             throw new RuntimeException('SYSTEM_REPORTER_URL oder SYSTEM_REPORTER_TOKEN ist nicht gesetzt.');
         }
+        if (! self::isSafeUrl($url)) {
+            throw new RuntimeException('SYSTEM_REPORTER_URL muss https sein (http nur für localhost) — sonst ginge das Token im Klartext übers Netz.');
+        }
+
+        // Ungültiges UTF-8 (z. B. APP_NAME aus einer Latin-1-.env) ersetzen,
+        // statt beim Senden an json_encode zu scheitern.
+        $payload = json_decode((string) json_encode($this->payload(), JSON_INVALID_UTF8_SUBSTITUTE), true);
 
         try {
             $response = Http::withToken($token)
                 ->acceptJson()
                 ->timeout((int) config('system-reporter.http_timeout', 15))
+                // Ein Redirect machte aus dem POST ein GET ohne Body.
+                ->withoutRedirecting()
                 // Nur Verbindungsfehler und 5xx erneut versuchen; 401/422
                 // ändern sich durch Wiederholen nicht.
                 ->retry(3, 2000, fn ($e) => $e instanceof ConnectionException
                     || ($e instanceof RequestException && $e->response->serverError()), throw: false)
-                ->post($url, $this->payload());
+                ->post($url, $payload);
         } catch (ConnectionException $e) {
             throw new RuntimeException('Portal nicht erreichbar: '.$e->getMessage(), previous: $e);
         }
@@ -122,7 +131,22 @@ class Reporter
             throw new RuntimeException($this->describeFailure($response));
         }
 
-        return (array) $response->json();
+        // Ein 2xx von einem Proxy oder einer Fehlerseite ist keine Annahme.
+        $body = $response->json();
+        if (! is_array($body) || ($body['status'] ?? null) !== 'accepted') {
+            throw new RuntimeException('Unerwartete Antwort (HTTP '.$response->status().'): '.mb_substr(trim(strip_tags($response->body())), 0, 200));
+        }
+
+        return $body;
+    }
+
+    public static function isSafeUrl(string $url): bool
+    {
+        $scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
+        $host = strtolower((string) parse_url($url, PHP_URL_HOST));
+
+        return $scheme === 'https'
+            || ($scheme === 'http' && in_array($host, ['localhost', '127.0.0.1', '::1', '[::1]'], true));
     }
 
     private function describeFailure(Response $response): string
