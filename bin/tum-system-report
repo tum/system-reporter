@@ -1,0 +1,348 @@
+#!/usr/bin/env bash
+# tum-system-report — meldet System- und Patchstand eines Servers an das
+# IT-Inventar des TUM IT-Portals (tum.system-report/v2).
+#
+# Für Server ohne Laravel-Anwendung. Braucht nur bash und curl, kein Root
+# (apt-get/dnf laufen als Simulation). Liest das Token aus einer Datei,
+# damit es weder in der Crontab noch in der Prozessliste steht.
+#
+#   tum-system-report [--dry-run] [--config DATEI] [--random-delay SEKUNDEN]
+#
+# Konfiguration (Default /etc/tum-system-report.conf, Rechte 600):
+#   TOKEN=itps_…
+#   URL=https://portal.it.tum.de/interface/systems/report   (optional)
+#
+# Exit-Codes: 0 gemeldet, 1 Meldung abgelehnt/fehlgeschlagen, 2 Aufruffehler.
+
+set -euo pipefail
+
+VERSION="2.1.0"
+SCHEMA="tum.system-report/v2"
+DEFAULT_URL="https://portal.it.tum.de/interface/systems/report"
+
+# Nur für Tests: Präfix für Systempfade und Ersatz für Paketmanager.
+ROOT="${TUM_SYSTEM_REPORT_ROOT:-}"
+APT_GET="${TUM_SYSTEM_REPORT_APT_GET:-apt-get}"
+DNF="${TUM_SYSTEM_REPORT_DNF:-dnf}"
+
+config_file="/etc/tum-system-report.conf"
+dry_run=0
+random_delay=0
+
+usage() {
+    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dry-run) dry_run=1 ;;
+        --config) config_file="${2:?--config braucht eine Datei}"; shift ;;
+        --random-delay) random_delay="${2:?--random-delay braucht Sekunden}"; shift ;;
+        -h|--help) usage; exit 0 ;;
+        --version) echo "tum-system-report $VERSION"; exit 0 ;;
+        *) echo "Unbekannte Option: $1" >&2; usage >&2; exit 2 ;;
+    esac
+    shift
+done
+
+errors=()
+
+# --- JSON-Helfer ---------------------------------------------------------
+
+# JSON-String inklusive Anführungszeichen; Steuerzeichen fallen weg.
+json_str() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\t'/ }"
+    s="${s//$'\n'/ }"
+    s="${s//$'\r'/}"
+    s="$(printf '%s' "$s" | tr -d '\000-\037')"
+    printf '"%s"' "$s"
+}
+
+# Baut ein Objekt aus Paaren "schlüssel" "json-wert"; leere Werte fallen weg.
+json_obj() {
+    local out="" key value
+    while [ $# -ge 2 ]; do
+        key="$1"; value="$2"; shift 2
+        [ -z "$value" ] && continue
+        out="${out:+$out,}$(json_str "$key"):$value"
+    done
+    printf '{%s}' "$out"
+}
+
+json_int() {
+    case "$1" in
+        ''|*[!0-9]*) ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+# Kürzt auf N Zeichen und gibt einen JSON-String aus (leer bleibt leer).
+json_str_max() {
+    [ -z "$1" ] && return 0
+    json_str "${1:0:$2}"
+}
+
+# --- Sammeln -------------------------------------------------------------
+
+os_release_value() {
+    local file="$ROOT/etc/os-release" line
+    [ -r "$file" ] || return 0
+    line="$(grep -E "^$1=" "$file" | head -n1 || true)"
+    line="${line#*=}"
+    line="${line%\"}"
+    line="${line#\"}"
+    printf '%s' "$line"
+}
+
+hostname_value() {
+    if [ -n "$ROOT" ] && [ -r "$ROOT/etc/hostname" ]; then
+        head -n1 "$ROOT/etc/hostname"
+    else
+        hostname -f 2>/dev/null || hostname 2>/dev/null || true
+    fi
+}
+
+uptime_value() {
+    local file="$ROOT/proc/uptime" up
+    [ -r "$file" ] || return 0
+    read -r up _ < "$file" || return 0
+    printf '%s' "${up%%.*}"
+}
+
+last_upgrade_value() {
+    local file mtime
+    for file in /var/log/apt/history.log /var/lib/dpkg/status /var/log/dnf.rpm.log /var/lib/rpm/rpmdb.sqlite; do
+        if [ -e "$ROOT$file" ]; then
+            mtime="$(stat -c %Y "$ROOT$file" 2>/dev/null || stat -f %m "$ROOT$file" 2>/dev/null || true)"
+            if [ -n "$mtime" ]; then
+                date -u -d "@$mtime" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+                    || date -u -r "$mtime" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || true
+                return 0
+            fi
+        fi
+    done
+}
+
+# Setzen $patch_json (oder lassen es leer); Fehler landen in $errors.
+# Bewusst ohne Ausgabe: in einer $(…)-Subshell gingen die Fehler verloren.
+patch_json=""
+
+patch_apt() {
+    local output pending=0 security=0 line reboot
+    # dist-upgrade statt upgrade: Kernel-Sicherheitsupdates kommen auf
+    # Ubuntu als neue Pakete und würden bei "upgrade" zurückgehalten.
+    if ! output="$(LC_ALL=C "$APT_GET" -s -o Debug::NoLocking=1 dist-upgrade 2>/dev/null)"; then
+        errors+=("os.patch: apt-get failed")
+        return 0
+    fi
+    while IFS= read -r line; do
+        case "$line" in
+            "Inst "*)
+                pending=$((pending + 1))
+                case "${line,,}" in *security*) security=$((security + 1)) ;; esac
+                ;;
+        esac
+    done <<< "$output"
+
+    # /var/run/reboot-required legt nur update-notifier an; ohne ihn ist
+    # "keine Datei" unbekannt, nicht "kein Neustart nötig".
+    if [ -e "$ROOT/var/run/reboot-required" ]; then
+        reboot=true
+    elif [ -d "$ROOT/usr/share/update-notifier" ]; then
+        reboot=false
+    else
+        reboot=null
+    fi
+
+    patch_json="$(json_obj source '"apt"' pending "$pending" security_pending "$security" \
+        reboot_required "$reboot" last_upgrade_at "$(json_str_max "$(last_upgrade_value)" 30)")"
+}
+
+patch_dnf() {
+    local output status pending=0 security=0 reboot=null line
+    # check-update: Exit 100 = Updates vorhanden, 0 = keine, sonst Fehler.
+    set +e
+    output="$("$DNF" -q check-update 2>/dev/null)"
+    status=$?
+    set -e
+    if [ "$status" -ne 0 ] && [ "$status" -ne 100 ]; then
+        errors+=("os.patch: dnf check-update exit $status")
+        return 0
+    fi
+    while IFS= read -r line; do
+        # Paketzeilen: "name.arch  version  repo"; "Obsoleting"-Block ignorieren.
+        case "$line" in
+            ''|' '*|Obsoleting*|Security:*) ;;
+            *.*' '*) pending=$((pending + 1)) ;;
+        esac
+    done <<< "$output"
+
+    if output="$("$DNF" -q updateinfo list --security --updates 2>/dev/null)"; then
+        security="$(printf '%s\n' "$output" | grep -c . || true)"
+    else
+        errors+=("os.patch: dnf updateinfo failed")
+        security=""
+    fi
+
+    # needs-restarting -r: Exit 1 = Neustart nötig, 0 = nicht nötig.
+    if command -v needs-restarting >/dev/null 2>&1; then
+        set +e
+        needs-restarting -r >/dev/null 2>&1
+        case $? in 0) reboot=false ;; 1) reboot=true ;; esac
+        set -e
+    fi
+
+    patch_json="$(json_obj source '"dnf"' pending "$pending" security_pending "$(json_int "$security")" \
+        reboot_required "$reboot" last_upgrade_at "$(json_str_max "$(last_upgrade_value)" 30)")"
+}
+
+patch_value() {
+    if [ -x "$ROOT/usr/bin/apt-get" ] || [ -n "${TUM_SYSTEM_REPORT_APT_GET:-}" ]; then
+        patch_apt
+    elif [ -x "$ROOT/usr/bin/dnf" ] || [ -n "${TUM_SYSTEM_REPORT_DNF:-}" ]; then
+        patch_dnf
+    else
+        errors+=("os.patch: unsupported package manager")
+    fi
+}
+
+build_payload() {
+    local reported_at os_obj instance_obj reporter_obj errors_json="" e
+
+    reported_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    patch_value
+
+    os_obj="$(json_obj \
+        family '"Linux"' \
+        id "$(json_str_max "$(os_release_value ID)" 50)" \
+        version_id "$(json_str_max "$(os_release_value VERSION_ID)" 50)" \
+        pretty_name "$(json_str_max "$(os_release_value PRETTY_NAME)" 150)" \
+        kernel "$(json_str_max "$(uname -r 2>/dev/null || true)" 100)" \
+        machine "$(json_str_max "$(uname -m 2>/dev/null || true)" 30)" \
+        uptime_s "$(json_int "$(uptime_value)")" \
+        patch "$patch_json")"
+
+    instance_obj="$(json_obj hostname "$(json_str_max "$(hostname_value)" 255)")"
+
+    reporter_obj="$(json_obj \
+        name '"tum/system-report.sh"' \
+        version "$(json_str "$VERSION")" \
+        context '"cli"' \
+        capabilities '["os","os_patch"]')"
+
+    for e in "${errors[@]+"${errors[@]}"}"; do
+        [ -z "$e" ] && continue
+        errors_json="${errors_json:+$errors_json,}$(json_str_max "$e" 500)"
+    done
+
+    json_obj \
+        schema "$(json_str "$SCHEMA")" \
+        reported_at "$(json_str "$reported_at")" \
+        reporter "$reporter_obj" \
+        instance "$instance_obj" \
+        os "$os_obj" \
+        collect_errors "${errors_json:+[$errors_json]}"
+    echo
+}
+
+# --- Konfiguration -------------------------------------------------------
+
+# Liest KEY=VALUE, ohne die Datei auszuführen (kein "source").
+config_value() {
+    local line
+    [ -r "$config_file" ] || return 0
+    line="$(grep -E "^[[:space:]]*$1[[:space:]]*=" "$config_file" | tail -n1 || true)"
+    line="${line#*=}"
+    line="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/")"
+    printf '%s' "$line"
+}
+
+is_safe_url() {
+    case "$1" in
+        https://*) return 0 ;;
+        http://localhost[:/]*|http://localhost|http://127.0.0.1[:/]*|http://127.0.0.1|http://\[::1\]*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# --- Ablauf --------------------------------------------------------------
+
+# Eine Subshell für alles: patch_value und die Fehlerliste teilen sie sich.
+payload="$(build_payload)"
+
+if [ "$dry_run" -eq 1 ]; then
+    printf '%s\n' "$payload"
+    exit 0
+fi
+
+token="${TUM_SYSTEM_REPORT_TOKEN:-$(config_value TOKEN)}"
+url="${TUM_SYSTEM_REPORT_URL:-$(config_value URL)}"
+url="${url:-$DEFAULT_URL}"
+
+if [ -z "$token" ]; then
+    echo "Kein Token: TOKEN=itps_… in $config_file eintragen (Rechte 600)." >&2
+    exit 2
+fi
+case "$token" in
+    itps_*) ;;
+    *) echo "Token hat nicht das Format itps_…" >&2; exit 2 ;;
+esac
+if ! is_safe_url "$url"; then
+    echo "URL muss https sein (http nur für localhost) — sonst ginge das Token im Klartext übers Netz." >&2
+    exit 2
+fi
+if ! command -v curl >/dev/null 2>&1; then
+    echo "curl fehlt." >&2
+    exit 2
+fi
+
+if [ "$random_delay" -gt 0 ] 2>/dev/null; then
+    sleep $((RANDOM % random_delay))
+fi
+
+body_file="$(mktemp)"
+response_file="$(mktemp)"
+trap 'rm -f "$body_file" "$response_file"' EXIT
+printf '%s' "$payload" > "$body_file"
+
+# Token über stdin als Header, nicht als Argument (sonst in `ps` sichtbar).
+# Kein -L: ein Redirect machte aus dem POST ein GET ohne Body.
+set +e
+status="$(printf 'Authorization: Bearer %s\n' "$token" | curl -sS \
+    --max-time 30 --retry 3 --retry-delay 2 \
+    -H @- \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json' \
+    -H "User-Agent: tum-system-report/$VERSION" \
+    --data-binary @"$body_file" \
+    -o "$response_file" -w '%{http_code}' \
+    "$url")"
+curl_exit=$?
+set -e
+
+if [ "$curl_exit" -ne 0 ]; then
+    echo "Portal nicht erreichbar (curl exit $curl_exit)." >&2
+    exit 1
+fi
+
+response="$(head -c 500 "$response_file" | tr -d '\000-\037')"
+case "$status" in
+    2??)
+        case "$response" in
+            *'"status":"accepted"'*) ;;
+            *) echo "Unerwartete Antwort (HTTP $status): $response" >&2; exit 1 ;;
+        esac
+        ;;
+    *)
+        echo "HTTP $status: $response" >&2
+        exit 1
+        ;;
+esac
+
+case "$response" in
+    *'"stored":true'*) echo "Gemeldet (neuer Stand gespeichert)." ;;
+    *) echo "Gemeldet (Stand unverändert)." ;;
+esac

@@ -7,6 +7,7 @@ use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Foundation\Http\Kernel;
 use Illuminate\Support\ServiceProvider;
 use Tum\SystemReporter\Collectors\OsCollector;
+use Tum\SystemReporter\Collectors\PackageCollector;
 use Tum\SystemReporter\Console\ReportCommand;
 use Tum\SystemReporter\Http\RecordWebRuntime;
 use Tum\SystemReporter\Support\CommandRunner;
@@ -18,6 +19,7 @@ class SystemReporterServiceProvider extends ServiceProvider
         $this->mergeConfigFrom(__DIR__.'/../config/system-reporter.php', 'system-reporter');
         $this->app->singleton(Reporter::class);
         $this->app->bind(OsCollector::class, fn ($app) => new OsCollector($app->make(CommandRunner::class)));
+        $this->app->bind(PackageCollector::class, fn ($app) => new PackageCollector($app->basePath()));
     }
 
     public function boot(): void

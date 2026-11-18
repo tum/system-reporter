@@ -37,5 +37,9 @@ return [
     // Auf Shared Hosting meist nicht möglich; dann steht es in collect_errors.
     'os_patch' => env('SYSTEM_REPORTER_OS_PATCH', true),
 
+    // Installierte Produktionspakete (Composer, npm: nur Name + Version)
+    // melden, damit das Portal sie mit bekannten Schwachstellen abgleicht.
+    'packages' => env('SYSTEM_REPORTER_PACKAGES', true),
+
     'http_timeout' => 15,
 ];

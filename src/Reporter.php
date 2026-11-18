@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Http;
 use RuntimeException;
 use Tum\SystemReporter\Collectors\AppCollector;
 use Tum\SystemReporter\Collectors\OsCollector;
+use Tum\SystemReporter\Collectors\PackageCollector;
 use Tum\SystemReporter\Collectors\RuntimeCollector;
 use Tum\SystemReporter\Http\RecordWebRuntime;
 use Tum\SystemReporter\Support\ErrorBag;
@@ -22,12 +23,13 @@ class Reporter
 {
     public const SCHEMA = 'tum.system-report/v2';
 
-    public const VERSION = '2.0.1';
+    public const VERSION = '2.1.0';
 
     public function __construct(
         private AppCollector $app,
         private RuntimeCollector $runtime,
         private OsCollector $os,
+        private PackageCollector $packages,
     ) {}
 
     /**
@@ -37,6 +39,7 @@ class Reporter
     {
         $errors = new ErrorBag;
         $withPatch = (bool) config('system-reporter.os_patch', true);
+        $withPackages = (bool) config('system-reporter.packages', true);
 
         $payload = [
             'schema' => self::SCHEMA,
@@ -47,6 +50,7 @@ class Reporter
                 'context' => PHP_SAPI === 'cli' ? 'cli' : 'web',
                 'capabilities' => array_values(array_filter([
                     'app', 'runtime', 'os', $withPatch ? 'os_patch' : null,
+                    $withPackages ? 'packages' : null,
                     config('system-reporter.record_web_runtime') ? 'web_runtime' : null,
                 ])),
             ],
@@ -60,6 +64,13 @@ class Reporter
             'os' => $this->os->collect($errors, $withPatch),
             'signals' => $this->signals(),
         ];
+
+        if ($withPackages) {
+            $packages = $this->packages->collect($errors);
+            if ($packages !== []) {
+                $payload['packages'] = $packages;
+            }
+        }
 
         if ($errors->all() !== []) {
             $payload['collect_errors'] = $errors->all();

@@ -4,8 +4,11 @@ Laravel-Paket, mit dem eine Anwendung ihren **System- und Patchstand** selbst an
 das IT-Inventar des TUM IT-Portals meldet (`/systems`). Gedacht für Umgebungen
 ohne Agent und ohne CI, insbesondere **Shared Webhosting**.
 
+Für **Server ohne Laravel-Anwendung** liegt ein Shell-Skript bei
+([`bin/tum-system-report`](#server)), das denselben Heartbeat ohne PHP schickt.
+
 Das Paket meldet nur Fakten. Bewertet wird zentral im Portal (Meldestatus,
-später Support-Ende und Schwachstellen). Zuständigkeiten pflegt der Lehrstuhl
+Support-Ende, bekannte Schwachstellen in den Paketen). Zuständigkeiten pflegt der Lehrstuhl
 im Portal, nicht in der App.
 
 ## Was gemeldet wird
@@ -20,6 +23,7 @@ Einmal täglich ein Heartbeat im Format `tum.system-report/v2`:
 | `runtime` | PHP-Version, SAPI und Extensions; Datenbank (Produkt + Version, MariaDB normalisiert); OpenSSL, cURL, ICU; `web_php`: PHP-Version im Web-Kontext |
 | `os` | `/etc/os-release`, Kernel, Uptime; `patch`: ausstehende Updates und Sicherheitsupdates (`apt-get -s dist-upgrade`, zählt auch neue Kernel-Pakete), Neustart nötig (`null` = unbekannt, wenn das System keinen update-notifier hat), letztes Update |
 | `signals` | `debug`, `https`, `secure_cookie`; aus dem Web-Kontext zusätzlich `display_errors`, `expose_php` (Werte aus der php.ini) |
+| `packages` | installierte Produktionspakete, nur Name und Version: `composer` aus `vendor/composer/installed.json` (ohne dev), `npm` aus `package-lock.json` (ohne dev). Das Portal gleicht sie mit [OSV](https://osv.dev) ab |
 | `collect_errors` | was nicht auslesbar war, z. B. `os.patch: exec disabled` |
 
 Nicht gemeldet werden Secrets, Umgebungsvariablen oder personenbezogene Daten
@@ -91,7 +95,41 @@ werden nur Verbindungsfehler und 5xx.
 | `SYSTEM_REPORTER_ENABLED` | `false` | Meldung und Zeitplan an/aus |
 | `SYSTEM_REPORTER_SCHEDULE` | `true` | im Scheduler registrieren |
 | `SYSTEM_REPORTER_RECORD_WEB_RUNTIME` | `true` | Middleware für `web_php` |
-| `SYSTEM_REPORTER_OS_PATCH` | `true` | `apt-get -s upgrade` ausführen |
+| `SYSTEM_REPORTER_OS_PATCH` | `true` | `apt-get -s dist-upgrade` ausführen |
+| `SYSTEM_REPORTER_PACKAGES` | `true` | Paketliste (Composer, npm) mitsenden |
+
+## Server
+
+Für Server ohne Laravel-Anwendung (Datenbank-, Mail-, Reverse-Proxy-Server
+usw.) meldet `bin/tum-system-report` Betriebssystem und Patchstand. Es braucht
+nur `bash` und `curl`, keine Root-Rechte und kein PHP. Unterstützt werden
+`apt` (Debian, Ubuntu) und `dnf` (RHEL, Rocky, Alma, Fedora).
+
+```bash
+# Version festlegen, Skript holen und prüfen
+curl -fsSLo /usr/local/bin/tum-system-report \
+  https://raw.githubusercontent.com/tum/system-reporter/v2.1.0/bin/tum-system-report
+chmod 755 /usr/local/bin/tum-system-report
+tum-system-report --dry-run        # zeigt den Payload, sendet nichts
+
+# Token aus dem Portal (IT-Systeme → System → Melde-Tokens)
+install -m 600 /dev/null /etc/tum-system-report.conf
+echo 'TOKEN=itps_…' > /etc/tum-system-report.conf
+
+# täglich melden, gestreut über eine Stunde
+echo '0 4 * * * root /usr/local/bin/tum-system-report --random-delay 3600 >/dev/null' \
+  > /etc/cron.d/tum-system-report
+```
+
+- Das Token steht nur in der Konfigurationsdatei. Das Skript liest sie, ohne
+  sie auszuführen, und übergibt das Token per stdin an curl. So erscheint es
+  nicht in der Prozessliste.
+- `URL=` in derselben Datei überschreibt den Melde-Endpunkt; nur `https://`
+  (`http://` nur für localhost). Redirects werden nicht verfolgt.
+- Fehler gehen auf stderr (Cron mailt sie), Exit-Code 1 bei abgelehnter oder
+  fehlgeschlagener Meldung, 2 bei falscher Konfiguration.
+- Was nicht ermittelbar ist (z. B. kein unterstützter Paketmanager), steht in
+  `collect_errors`; gemeldet wird trotzdem.
 
 ## Entwicklung
 
@@ -102,11 +140,21 @@ composer lint      # Pint
 composer analyse   # PHPStan Level 8 (Larastan)
 ```
 
-CI prüft PHP 8.2–8.5 gegen Laravel 12 und 13. Laravel 11 wird nicht
+CI prüft PHP 8.2–8.5 gegen Laravel 12 und 13 und das Server-Skript mit
+`shellcheck`; `tests/Unit/ServerScriptTest.php` führt es gegen ein
+Fixture-Verzeichnis und einen lokalen Testserver aus. Laravel 11 wird nicht
 unterstützt: Die Linie ist EOL, und Composer blockiert alle 11.x-Versionen
 wegen offener Sicherheitslücken.
 
-## Änderungen gegenüber dem ersten Entwurf (v1)
+## Änderungen
+
+### 2.1.0
+
+- `packages`: Composer- und npm-Produktionspakete für den Schwachstellen-Abgleich
+  im Portal (abschaltbar mit `SYSTEM_REPORTER_PACKAGES=false`)
+- `bin/tum-system-report`: Melde-Skript für Server ohne Laravel (apt, dnf)
+
+### Gegenüber dem ersten Entwurf (v1)
 
 - Format `tum.system-report/v2`: keine `system_id`/`owner` mehr, Identität per Token
 - neu: `os.patch`, `runtime.web_php`, `collect_errors`, `reporter.context`
@@ -115,5 +163,5 @@ wegen offener Sicherheitslücken.
 - Meldezeit je Installation gestreut (03:00–05:59) statt fest 04:17
 - robust auf Shared Hosting: `open_basedir`, gesperrtes `exec`/`php_uname`
   führen zu `collect_errors`-Einträgen statt zum Abbruch
-- Dependency-Track-Upload und Pull-Modus entfallen vorerst: das Portal hat
-  dafür noch keine Gegenstelle (folgt mit der SBOM-Auswertung)
+- Dependency-Track-Upload und Pull-Modus entfallen: das Portal gleicht die
+  gemeldeten Pakete selbst mit OSV ab (seit 2.1.0)
