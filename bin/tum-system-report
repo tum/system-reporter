@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-VERSION="2.2.0"
+VERSION="2.2.1"
 SCHEMA="tum.system-report/v2"
 DEFAULT_URL="https://portal.it.tum.de/interface/systems/report"
 

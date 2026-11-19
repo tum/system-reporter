@@ -40,9 +40,16 @@ class SystemReporterServiceProvider extends ServiceProvider
             if (! config('system-reporter.schedule.enabled')) {
                 return;
             }
+            // Im Hintergrund: apt-get und bis zu drei Versuche gegen ein
+            // langsames Portal würden sonst schedule:run und damit alle
+            // anderen Aufgaben dieser Minute (Queue, Deploy) aufhalten. Und
+            // eine fehlgeschlagene Meldung steht dann als eigene Zeile im
+            // Log statt unter dem Stacktrace, den der Scheduler für jeden
+            // Exit-Code ungleich 0 eines Vordergrund-Befehls meldet.
             $schedule->command('system-reporter:report')
                 ->dailyAt(self::scheduleTime())
                 ->timezone((string) config('system-reporter.schedule.timezone', 'Europe/Berlin'))
+                ->runInBackground()
                 ->withoutOverlapping(30);
         });
 
