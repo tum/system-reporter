@@ -108,7 +108,7 @@ nur `bash` und `curl`, keine Root-Rechte und kein PHP. Unterstützt werden
 ```bash
 # Version festlegen, Skript holen und prüfen
 curl -fsSLo /usr/local/bin/tum-system-report \
-  https://raw.githubusercontent.com/tum/system-reporter/v2.1.0/bin/tum-system-report
+  https://raw.githubusercontent.com/tum/system-reporter/v2.2.0/bin/tum-system-report
 chmod 755 /usr/local/bin/tum-system-report
 tum-system-report --dry-run        # zeigt den Payload, sendet nichts
 
@@ -131,6 +131,40 @@ echo '0 4 * * * root /usr/local/bin/tum-system-report --random-delay 3600 >/dev/
 - Was nicht ermittelbar ist (z. B. kein unterstützter Paketmanager), steht in
   `collect_errors`; gemeldet wird trotzdem.
 
+### PHP-Anwendungen ohne Laravel (Shared Webhosting)
+
+Für WordPress, Symfony oder eigene Composer-Projekte, z. B. auf dem
+Shared Webhosting des LRZ: Im Portal die Anwendung als *Webanwendung*
+anlegen (als Server den gemeinsam genutzten Webhosting-Server wählen), ein
+Token erzeugen und das Skript als normaler Benutzer per Cron laufen lassen.
+`--composer` meldet dann die installierten Composer-Pakete für den Abgleich
+mit bekannten Schwachstellen:
+
+```bash
+mkdir -p ~/bin && curl -fsSLo ~/bin/tum-system-report \
+  https://raw.githubusercontent.com/tum/system-reporter/v2.2.0/bin/tum-system-report
+chmod 700 ~/bin/tum-system-report
+install -m 600 /dev/null ~/.tum-system-report.conf
+echo 'TOKEN=itps_…' > ~/.tum-system-report.conf
+
+~/bin/tum-system-report --config ~/.tum-system-report.conf \
+  --composer ~/webroot/meine-app --dry-run
+
+# crontab -e
+17 5 * * * $HOME/bin/tum-system-report --config $HOME/.tum-system-report.conf --composer $HOME/webroot/meine-app >/dev/null
+```
+
+- Gelesen wird `vendor/composer/installed.json` (was installiert ist, ohne
+  dev-Pakete), sonst `composer.lock` (ohne `packages-dev`). Gemeldet werden
+  nur Name und Version, keine Pfade.
+- Braucht die PHP-CLI; heißt sie anders, `--php /usr/bin/php8.3`.
+- `--composer` lässt sich mehrfach angeben, wenn mehrere Projekte zu
+  *einer* Anwendung gehören. Für getrennte Anwendungen je ein Token und ein
+  Aufruf.
+- Betriebssystem und Patchstand meldet das Skript wie immer mit; liegt die
+  Anwendung im Portal auf einem gemeinsam genutzten Server, stehen diese
+  Befunde dort und nicht bei der Anwendung.
+
 ## Entwicklung
 
 ```bash
@@ -147,6 +181,11 @@ unterstützt: Die Linie ist EOL, und Composer blockiert alle 11.x-Versionen
 wegen offener Sicherheitslücken.
 
 ## Änderungen
+
+### 2.2.0
+
+- `bin/tum-system-report --composer DIR`: Composer-Pakete von PHP-Anwendungen
+  ohne Laravel (z. B. auf Shared Webhosting) für den Schwachstellen-Abgleich
 
 ### 2.1.0
 

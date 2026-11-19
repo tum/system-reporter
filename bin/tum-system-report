@@ -7,6 +7,11 @@
 # damit es weder in der Crontab noch in der Prozessliste steht.
 #
 #   tum-system-report [--dry-run] [--config DATEI] [--random-delay SEKUNDEN]
+#                     [--composer VERZEICHNIS]... [--php PHP-BINARY]
+#
+# --composer meldet die installierten Composer-Pakete einer PHP-Anwendung
+# ohne Laravel (WordPress, Symfony, …) für den Schwachstellen-Abgleich;
+# mehrfach angebbar. Braucht dafür die PHP-CLI (Default: php).
 #
 # Konfiguration (Default /etc/tum-system-report.conf, Rechte 600):
 #   TOKEN=itps_…
@@ -16,7 +21,7 @@
 
 set -euo pipefail
 
-VERSION="2.1.0"
+VERSION="2.2.0"
 SCHEMA="tum.system-report/v2"
 DEFAULT_URL="https://portal.it.tum.de/interface/systems/report"
 
@@ -29,8 +34,11 @@ config_file="/etc/tum-system-report.conf"
 dry_run=0
 random_delay=0
 
+composer_dirs=()
+php_bin="${TUM_SYSTEM_REPORT_PHP:-php}"
+
 usage() {
-    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [ $# -gt 0 ]; do
@@ -38,6 +46,8 @@ while [ $# -gt 0 ]; do
         --dry-run) dry_run=1 ;;
         --config) config_file="${2:?--config braucht eine Datei}"; shift ;;
         --random-delay) random_delay="${2:?--random-delay braucht Sekunden}"; shift ;;
+        --composer) composer_dirs+=("${2:?--composer braucht ein Verzeichnis}"); shift ;;
+        --php) php_bin="${2:?--php braucht ein PHP-Binary}"; shift ;;
         -h|--help) usage; exit 0 ;;
         --version) echo "tum-system-report $VERSION"; exit 0 ;;
         *) echo "Unbekannte Option: $1" >&2; usage >&2; exit 2 ;;
@@ -219,11 +229,98 @@ patch_value() {
     fi
 }
 
+# --- Composer-Pakete ----------------------------------------------------
+
+# Liest je Verzeichnis vendor/composer/installed.json (was installiert ist,
+# ohne dev-Pakete) oder ersatzweise composer.lock (ohne packages-dev) und
+# gibt eine JSON-Liste [{"name","version"}] aus. Nur Name und Version; nur
+# prüfbare Versionen (keine Branch- oder Git-Stände). Fehler je Verzeichnis
+# auf stderr, ohne Pfad (der verriete Benutzer- und Projektnamen).
+# Bewusst ohne neuere Syntax: auf Shared Hosting ist die CLI oft älter.
+# shellcheck disable=SC2016 # PHP-Code: $-Variablen sollen nicht expandieren
+COMPOSER_EXTRACT='
+$result = array();
+$seen = array();
+foreach (array_slice($argv, 1) as $i => $dir) {
+    $label = "packages.composer[" . ($i + 1) . "]";
+    $installed = $dir . "/vendor/composer/installed.json";
+    $lock = $dir . "/composer.lock";
+    $packages = null;
+    $dev = array();
+    if (@is_file($installed)) {
+        $data = json_decode((string) @file_get_contents($installed), true);
+        if (is_array($data)) {
+            $packages = isset($data["packages"]) ? $data["packages"] : (array_values($data) === $data ? $data : array());
+            foreach ((array) (isset($data["dev-package-names"]) ? $data["dev-package-names"] : array()) as $name) {
+                if (is_string($name)) { $dev[strtolower($name)] = true; }
+            }
+        }
+    } elseif (@is_file($lock)) {
+        $data = json_decode((string) @file_get_contents($lock), true);
+        if (is_array($data)) {
+            $packages = isset($data["packages"]) ? $data["packages"] : array();
+        }
+    } else {
+        fwrite(STDERR, $label . ": no composer.lock
+");
+        continue;
+    }
+    if (! is_array($packages)) {
+        fwrite(STDERR, $label . ": not readable
+");
+        continue;
+    }
+    foreach ($packages as $p) {
+        if (! is_array($p) || ! isset($p["name"], $p["version"]) || ! is_string($p["name"]) || ! is_string($p["version"])) { continue; }
+        $name = $p["name"];
+        $version = $p["version"];
+        if (isset($dev[strtolower($name)]) || strlen($name) > 214 || strlen($version) > 64) { continue; }
+        if (! preg_match("/^v?\\d+(\\.\\d+)*([-+.][0-9A-Za-z.+-]*)?$/", $version) || substr($version, -4) === "-dev") { continue; }
+        $key = strtolower($name) . "@" . strtolower($version);
+        if (isset($seen[$key])) { continue; }
+        $seen[$key] = true;
+        $result[] = array("name" => $name, "version" => $version);
+    }
+}
+usort($result, function ($a, $b) { return strcmp($a["name"] . "@" . $a["version"], $b["name"] . "@" . $b["version"]); });
+echo json_encode(array_slice($result, 0, 3000), JSON_UNESCAPED_SLASHES);
+'
+
+# Setzt $packages_json (oder lässt es leer); Fehler landen in $errors.
+packages_json=""
+
+composer_value() {
+    local output err_file line
+    [ "${#composer_dirs[@]}" -eq 0 ] && return 0
+    if ! command -v "$php_bin" >/dev/null 2>&1; then
+        errors+=("packages.composer: php not found")
+        return 0
+    fi
+    err_file="$(mktemp)"
+    if ! output="$("$php_bin" -d display_errors=stderr -r "$COMPOSER_EXTRACT" "${composer_dirs[@]}" 2>"$err_file")"; then
+        errors+=("packages.composer: php failed")
+        output=""
+    fi
+    while IFS= read -r line; do
+        case "$line" in
+            packages.composer*) errors+=("$line") ;;
+        esac
+    done < "$err_file"
+    rm -f "$err_file"
+    case "$output" in
+        '['*']') [ "$output" != "[]" ] && packages_json="$(json_obj composer "$output")" ;;
+    esac
+    return 0
+}
+
 build_payload() {
-    local reported_at os_obj instance_obj reporter_obj errors_json="" e
+    local reported_at os_obj instance_obj reporter_obj errors_json="" e capabilities
 
     reported_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     patch_value
+    composer_value
+    capabilities='["os","os_patch"]'
+    [ "${#composer_dirs[@]}" -gt 0 ] && capabilities='["os","os_patch","packages"]'
 
     os_obj="$(json_obj \
         family '"Linux"' \
@@ -241,7 +338,7 @@ build_payload() {
         name '"tum/system-report.sh"' \
         version "$(json_str "$VERSION")" \
         context '"cli"' \
-        capabilities '["os","os_patch"]')"
+        capabilities "$capabilities")"
 
     for e in "${errors[@]+"${errors[@]}"}"; do
         [ -z "$e" ] && continue
@@ -254,6 +351,7 @@ build_payload() {
         reporter "$reporter_obj" \
         instance "$instance_obj" \
         os "$os_obj" \
+        packages "$packages_json" \
         collect_errors "${errors_json:+[$errors_json]}"
     echo
 }
