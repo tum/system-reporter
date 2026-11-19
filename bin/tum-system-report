@@ -237,6 +237,7 @@ patch_value() {
 # prüfbare Versionen (keine Branch- oder Git-Stände). Fehler je Verzeichnis
 # auf stderr, ohne Pfad (der verriete Benutzer- und Projektnamen).
 # Bewusst ohne neuere Syntax: auf Shared Hosting ist die CLI oft älter.
+# shellcheck disable=SC2016 # PHP-Code: $-Variablen sollen nicht expandieren
 COMPOSER_EXTRACT='
 $result = array();
 $seen = array();
