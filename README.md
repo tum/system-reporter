@@ -108,7 +108,7 @@ nur `bash` und `curl`, keine Root-Rechte und kein PHP. Unterstützt werden
 ```bash
 # Version festlegen, Skript holen und prüfen
 curl -fsSLo /usr/local/bin/tum-system-report \
-  https://raw.githubusercontent.com/tum/system-reporter/v2.2.0/bin/tum-system-report
+  https://raw.githubusercontent.com/tum/system-reporter/v2.2.1/bin/tum-system-report
 chmod 755 /usr/local/bin/tum-system-report
 tum-system-report --dry-run        # zeigt den Payload, sendet nichts
 
@@ -142,7 +142,7 @@ mit bekannten Schwachstellen:
 
 ```bash
 mkdir -p ~/bin && curl -fsSLo ~/bin/tum-system-report \
-  https://raw.githubusercontent.com/tum/system-reporter/v2.2.0/bin/tum-system-report
+  https://raw.githubusercontent.com/tum/system-reporter/v2.2.1/bin/tum-system-report
 chmod 700 ~/bin/tum-system-report
 install -m 600 /dev/null ~/.tum-system-report.conf
 echo 'TOKEN=itps_…' > ~/.tum-system-report.conf
@@ -181,6 +181,14 @@ unterstützt: Die Linie ist EOL, und Composer blockiert alle 11.x-Versionen
 wegen offener Sicherheitslücken.
 
 ## Änderungen
+
+### 2.2.1
+
+- Der tägliche Report läuft im Hintergrund (`runInBackground()`). Vorher
+  konnte er `schedule:run` bei einem langsamen Portal rund eine Minute
+  aufhalten (`apt-get`, bis zu drei Versuche mit 15 s Timeout), samt Queue
+  und anderer Aufgaben dieser Minute; ein Fehlschlag erschien zudem als
+  Stacktrace des Schedulers.
 
 ### 2.2.0
 

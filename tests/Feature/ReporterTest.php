@@ -141,6 +141,14 @@ class ReporterTest extends TestCase
             ->filter(fn ($e) => str_contains((string) $e->command, 'system-reporter:report'));
 
         $this->assertCount(1, $events);
+        $event = $events->first();
+        $this->assertTrue($event->runInBackground, 'blockiert sonst schedule:run');
+        $this->assertTrue($event->withoutOverlapping);
+        $this->assertSame('Europe/Berlin', $event->timezone);
+        $this->assertSame(
+            vsprintf('%d %d * * *', array_reverse(array_map('intval', explode(':', SystemReporterServiceProvider::scheduleTime())))),
+            $event->expression,
+        );
     }
 
     public function test_refuses_plain_http_except_localhost(): void
