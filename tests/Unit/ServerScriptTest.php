@@ -136,6 +136,62 @@ SH);
         $this->assertSame(str_repeat('a', 149).'ä', $payload['os']['pretty_name']);
     }
 
+    public function test_composer_packages_of_non_laravel_apps(): void
+    {
+        // App 1: installiert (installed.json mit dev-Paketen)
+        mkdir($this->root.'/srv/wordpress/vendor/composer', 0777, true);
+        file_put_contents($this->root.'/srv/wordpress/vendor/composer/installed.json', json_encode([
+            'packages' => [
+                ['name' => 'guzzlehttp/guzzle', 'version' => '7.9.2', 'dist' => ['url' => 'https://secret.example/x']],
+                ['name' => 'phpunit/phpunit', 'version' => '11.0.0'],
+                ['name' => 'acme/branch', 'version' => 'dev-main'],
+            ],
+            'dev-package-names' => ['phpunit/phpunit'],
+        ]));
+        // App 2: nur composer.lock
+        mkdir($this->root.'/srv/symfony', 0777, true);
+        file_put_contents($this->root.'/srv/symfony/composer.lock', json_encode([
+            'packages' => [['name' => 'symfony/http-kernel', 'version' => 'v6.4.1'], ['name' => 'guzzlehttp/guzzle', 'version' => '7.9.2']],
+            'packages-dev' => [['name' => 'symfony/debug-bundle', 'version' => 'v6.4.0']],
+        ]));
+
+        $result = $this->runScript([
+            '--dry-run',
+            '--php', PHP_BINARY,
+            '--composer', $this->root.'/srv/wordpress',
+            '--composer', $this->root.'/srv/symfony',
+            '--composer', $this->root.'/srv/fehlt',
+        ]);
+        $this->assertSame(0, $result['exit'], $result['stderr']);
+        $payload = json_decode($result['stdout'], true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertSame([
+            ['name' => 'guzzlehttp/guzzle', 'version' => '7.9.2'],
+            ['name' => 'symfony/http-kernel', 'version' => 'v6.4.1'],
+        ], $payload['packages']['composer']);
+        $this->assertContains('packages', $payload['reporter']['capabilities']);
+        $this->assertSame(['packages.composer[3]: no composer.lock'], $payload['collect_errors']);
+        $this->assertStringNotContainsString('/srv/', $result['stdout'], 'keine Pfade im Payload');
+        $this->assertStringNotContainsString('secret.example', $result['stdout']);
+    }
+
+    public function test_without_composer_option_no_packages_are_sent(): void
+    {
+        $payload = json_decode($this->runScript(['--dry-run'])['stdout'], true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertArrayNotHasKey('packages', $payload);
+        $this->assertNotContains('packages', $payload['reporter']['capabilities']);
+    }
+
+    public function test_missing_php_is_a_collect_error(): void
+    {
+        mkdir($this->root.'/srv/app', 0777, true);
+        $result = $this->runScript(['--dry-run', '--php', '/nonexistent/php', '--composer', $this->root.'/srv/app']);
+        $payload = json_decode($result['stdout'], true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertSame(['packages.composer: php not found'], $payload['collect_errors']);
+    }
+
     public function test_refuses_missing_token_and_plain_http(): void
     {
         $result = $this->runScript([], ['TUM_SYSTEM_REPORT_TOKEN' => '']);
