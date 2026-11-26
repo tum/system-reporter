@@ -108,7 +108,7 @@ nur `bash` und `curl`, keine Root-Rechte und kein PHP. Unterstützt werden
 ```bash
 # Version festlegen, Skript holen und prüfen
 curl -fsSLo /usr/local/bin/tum-system-report \
-  https://raw.githubusercontent.com/tum/system-reporter/v2.2.1/bin/tum-system-report
+  https://raw.githubusercontent.com/tum/system-reporter/v2.3.0/bin/tum-system-report
 chmod 755 /usr/local/bin/tum-system-report
 tum-system-report --dry-run        # zeigt den Payload, sendet nichts
 
@@ -142,7 +142,7 @@ mit bekannten Schwachstellen:
 
 ```bash
 mkdir -p ~/bin && curl -fsSLo ~/bin/tum-system-report \
-  https://raw.githubusercontent.com/tum/system-reporter/v2.2.1/bin/tum-system-report
+  https://raw.githubusercontent.com/tum/system-reporter/v2.3.0/bin/tum-system-report
 chmod 700 ~/bin/tum-system-report
 install -m 600 /dev/null ~/.tum-system-report.conf
 echo 'TOKEN=itps_…' > ~/.tum-system-report.conf
@@ -165,6 +165,43 @@ echo 'TOKEN=itps_…' > ~/.tum-system-report.conf
   Anwendung im Portal auf einem gemeinsam genutzten Server, stehen diese
   Befunde dort und nicht bei der Anwendung.
 
+### Python-Anwendungen und Container-Images (CI)
+
+`--python BINARY` meldet Version und installierte Pakete dieses Python
+(Abgleich mit OSV im Ökosystem PyPI, Support-Ende über endoflife.date).
+Gemeldet wird, was dieses Python importieren würde: für eine App im venv
+also `--python /pfad/zum/venv/bin/python`. Ab Python 3.8; nur Name und
+Version, keine Pfade.
+
+Für Anwendungen, die als Container-Image laufen (z. B. Azure Container Apps),
+meldet man am besten aus der CI nach dem Build, aus dem Image selbst.
+`--container` lässt dabei weg, was dem Host statt dem Image gehört: Kernel,
+Uptime, Neustart und den Patchstand. Ein Slim-Image hat keine apt-Listen,
+`apt-get -s` meldete dort fälschlich „0 ausstehend“. Weil Slim-Images oft
+kein `curl` haben, erzeugt man den Payload im Image und sendet ihn vom
+Runner:
+
+```bash
+curl -fsSLo tum-system-report \
+  https://raw.githubusercontent.com/tum/system-reporter/v2.3.0/bin/tum-system-report
+docker run --rm -v "$PWD/tum-system-report:/tmp/tum-system-report:ro" --entrypoint bash "$IMAGE" \
+  /tmp/tum-system-report --dry-run --container --python python \
+  --hostname meine-app --environment production --app-version "$GITHUB_SHA" > payload.json
+TUM_SYSTEM_REPORT_TOKEN="$TOKEN" bash tum-system-report --send-payload payload.json
+```
+
+- `--hostname` statt des Container-Hostnamens (der wechselt je Replica),
+  `--environment`, `--app-name` und `--app-version` füllen `instance` und
+  `app`.
+- `--send-payload DATEI` (oder `-` für stdin) prüft nur, dass es ein
+  JSON-Objekt ist, und sendet es wie gewohnt; Token und URL wie oben, in der
+  CI am einfachsten über `TUM_SYSTEM_REPORT_TOKEN`.
+- Das Portal erwartet eine Meldung je Tag. Wer nicht täglich deployt, meldet
+  zusätzlich per Zeitplan (`schedule:` im Workflow) das aktuell deployte
+  Image.
+- PyPI-Pakete und `runtime.python` wertet das Portal ab der Version aus, die
+  das Ökosystem PyPI kennt.
+
 ## Entwicklung
 
 ```bash
@@ -175,12 +212,21 @@ composer analyse   # PHPStan Level 8 (Larastan)
 ```
 
 CI prüft PHP 8.2–8.5 gegen Laravel 12 und 13 und das Server-Skript mit
-`shellcheck`; `tests/Unit/ServerScriptTest.php` führt es gegen ein
+`shellcheck`; der Python-Teil braucht `python3` auf dem Runner; `tests/Unit/ServerScriptTest.php` führt es gegen ein
 Fixture-Verzeichnis und einen lokalen Testserver aus. Laravel 11 wird nicht
 unterstützt: Die Linie ist EOL, und Composer blockiert alle 11.x-Versionen
 wegen offener Sicherheitslücken.
 
 ## Änderungen
+
+### 2.3.0
+
+- `bin/tum-system-report --python BINARY`: Python-Version (`runtime.python`)
+  und installierte Pakete (`packages.pypi`)
+- `--container`: Meldung aus einem Container-Image ohne Kernel, Uptime und
+  Patchstand des Hosts
+- `--hostname`, `--environment`, `--app-name`, `--app-version`
+- `--send-payload DATEI`: vorher erzeugten Payload senden (Images ohne curl)
 
 ### 2.2.1
 

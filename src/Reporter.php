@@ -23,7 +23,7 @@ class Reporter
 {
     public const SCHEMA = 'tum.system-report/v2';
 
-    public const VERSION = '2.2.1';
+    public const VERSION = '2.3.0';
 
     public function __construct(
         private AppCollector $app,

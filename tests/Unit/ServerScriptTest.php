@@ -192,6 +192,76 @@ SH);
         $this->assertSame(['packages.composer: php not found'], $payload['collect_errors']);
     }
 
+    public function test_python_runtime_and_packages(): void
+    {
+        $python = trim((string) shell_exec('command -v python3'));
+        if ($python === '') {
+            $this->markTestSkipped('python3 nötig');
+        }
+        // Zwei Fundstellen; foo.bar aus der zweiten wird nie geladen.
+        foreach (['site1/Foo_Bar-1.2.0' => "Name: Foo_Bar\nVersion: 1.2.0\n", 'site1/requests-2.32.3' => "Name: requests\nVersion: 2.32.3\n", 'site2/foo.bar-9.9' => "Name: foo.bar\nVersion: 9.9\n"] as $dir => $meta) {
+            mkdir($this->root.'/'.$dir.'.dist-info', 0777, true);
+            file_put_contents($this->root.'/'.$dir.'.dist-info/METADATA', "Metadata-Version: 2.1\n".$meta);
+        }
+        // Ersatz-Python: ohne -I, damit PYTHONPATH die Fixtures findet.
+        file_put_contents($this->root.'/bin/python', "#!/bin/sh\n[ \"\$1\" = -I ] && shift\nPYTHONPATH='{$this->root}/site1:{$this->root}/site2' exec '{$python}' \"\$@\"\n");
+        chmod($this->root.'/bin/python', 0755);
+
+        $result = $this->runScript(['--dry-run', '--python', $this->root.'/bin/python']);
+        $this->assertSame(0, $result['exit'], $result['stderr']);
+        $payload = json_decode($result['stdout'], true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertMatchesRegularExpression('/^3\.\d+\.\d+/', $payload['runtime']['python']['version']);
+        $this->assertSame('CPython', $payload['runtime']['python']['implementation']);
+        $pypi = array_column($payload['packages']['pypi'], 'version', 'name');
+        $this->assertSame('1.2.0', $pypi['Foo_Bar']);
+        $this->assertSame('2.32.3', $pypi['requests']);
+        $this->assertArrayNotHasKey('foo.bar', $pypi, 'je Name nur die geladene Fundstelle');
+        $this->assertArrayNotHasKey('composer', $payload['packages']);
+        $this->assertContains('runtime', $payload['reporter']['capabilities']);
+        $this->assertContains('packages', $payload['reporter']['capabilities']);
+        $this->assertStringNotContainsString($this->root, $result['stdout'], 'keine Pfade im Payload');
+    }
+
+    public function test_missing_python_is_a_collect_error(): void
+    {
+        $payload = json_decode($this->runScript(['--dry-run', '--python', '/nonexistent/python'])['stdout'], true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertSame(['packages.pypi: python not found'], $payload['collect_errors']);
+        $this->assertArrayNotHasKey('packages', $payload);
+    }
+
+    public function test_container_mode_reports_image_without_host_values(): void
+    {
+        $result = $this->runScript([
+            '--dry-run', '--container',
+            '--hostname', 'webgpt', '--environment', 'production',
+            '--app-name', 'TUM webGPT', '--app-version', 'abc1234',
+        ], ['TUM_SYSTEM_REPORT_APT_GET' => '/nonexistent/apt-get']);
+        $this->assertSame(0, $result['exit'], $result['stderr']);
+        $payload = json_decode($result['stdout'], true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertSame('ubuntu', $payload['os']['id']);
+        foreach (['patch', 'kernel', 'uptime_s'] as $key) {
+            $this->assertArrayNotHasKey($key, $payload['os'], "{$key} gehört dem Host, nicht dem Image");
+        }
+        $this->assertArrayNotHasKey('collect_errors', $payload, 'apt-get wird gar nicht erst aufgerufen');
+        $this->assertSame(['os', 'container'], $payload['reporter']['capabilities']);
+        $this->assertSame(['hostname' => 'webgpt', 'environment' => 'production'], $payload['instance']);
+        $this->assertSame(['name' => 'TUM webGPT', 'version' => 'abc1234'], $payload['app']);
+    }
+
+    public function test_send_payload_rejects_non_json(): void
+    {
+        file_put_contents($this->root.'/payload.json', 'kein json');
+        $result = $this->runScript(['--send-payload', $this->root.'/payload.json'], ['TUM_SYSTEM_REPORT_TOKEN' => 'itps_x']);
+        $this->assertSame(2, $result['exit']);
+        $this->assertStringContainsString('kein JSON-Objekt', $result['stderr']);
+
+        $result = $this->runScript(['--send-payload', $this->root.'/fehlt.json'], ['TUM_SYSTEM_REPORT_TOKEN' => 'itps_x']);
+        $this->assertSame(2, $result['exit']);
+    }
+
     public function test_refuses_missing_token_and_plain_http(): void
     {
         $result = $this->runScript([], ['TUM_SYSTEM_REPORT_TOKEN' => '']);
@@ -232,6 +302,15 @@ SH);
             $this->assertSame('Bearer itps_good', $request['authorization']);
             $this->assertSame('application/json', $request['content_type']);
             $this->assertSame('tum.system-report/v2', json_decode($request['body'], true)['schema']);
+
+            // Vorher erzeugter Payload (z. B. aus einem Image ohne curl) geht unverändert raus.
+            $dry = $this->runScript(['--dry-run', '--container', '--hostname', 'img'])['stdout'];
+            file_put_contents($this->root.'/payload.json', $dry);
+            $result = $this->runScript(['--send-payload', $this->root.'/payload.json', '--config', $this->root.'/etc/tum-system-report.conf']);
+            $this->assertSame(0, $result['exit'], $result['stderr']);
+            $request = json_decode((string) file_get_contents($this->root.'/request.json'), true);
+            $this->assertSame(trim($dry), $request['body']);
+            $this->assertSame('Bearer itps_good', $request['authorization']);
 
             // Falsches Token: Exit 1 mit HTTP-Status
             $result = $this->runScript([], ['TUM_SYSTEM_REPORT_TOKEN' => 'itps_bad', 'TUM_SYSTEM_REPORT_URL' => "http://127.0.0.1:{$port}/x"]);
