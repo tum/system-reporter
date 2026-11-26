@@ -8,10 +8,21 @@
 #
 #   tum-system-report [--dry-run] [--config DATEI] [--random-delay SEKUNDEN]
 #                     [--composer VERZEICHNIS]... [--php PHP-BINARY]
+#                     [--python PYTHON-BINARY] [--container]
+#                     [--hostname NAME] [--environment ENV]
+#                     [--app-name NAME] [--app-version VERSION]
+#   tum-system-report --send-payload DATEI [--config DATEI]
 #
 # --composer meldet die installierten Composer-Pakete einer PHP-Anwendung
 # ohne Laravel (WordPress, Symfony, …) für den Schwachstellen-Abgleich;
 # mehrfach angebbar. Braucht dafür die PHP-CLI (Default: php).
+# --python meldet Version und installierte Pakete dieses Python (z. B. eines
+# venv) für Support-Ende und Schwachstellen-Abgleich.
+# --container: Meldung aus einem Container-Image (z. B. in der CI). Kernel,
+# Uptime und Neustart gehören dann dem Host, Updates kommen mit dem nächsten
+# Image — gemeldet wird nur os-release, ohne Patchstand.
+# --send-payload schickt einen vorher mit --dry-run erzeugten Payload, etwa
+# wenn das Image selbst kein curl hat.
 #
 # Konfiguration (Default /etc/tum-system-report.conf, Rechte 600):
 #   TOKEN=itps_…
@@ -21,7 +32,7 @@
 
 set -euo pipefail
 
-VERSION="2.2.1"
+VERSION="2.3.0"
 SCHEMA="tum.system-report/v2"
 DEFAULT_URL="https://portal.it.tum.de/interface/systems/report"
 
@@ -36,9 +47,16 @@ random_delay=0
 
 composer_dirs=()
 php_bin="${TUM_SYSTEM_REPORT_PHP:-php}"
+python_bin=""
+container=0
+hostname_override=""
+environment=""
+app_name=""
+app_version=""
+send_payload=""
 
 usage() {
-    sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [ $# -gt 0 ]; do
@@ -48,6 +66,13 @@ while [ $# -gt 0 ]; do
         --random-delay) random_delay="${2:?--random-delay braucht Sekunden}"; shift ;;
         --composer) composer_dirs+=("${2:?--composer braucht ein Verzeichnis}"); shift ;;
         --php) php_bin="${2:?--php braucht ein PHP-Binary}"; shift ;;
+        --python) python_bin="${2:?--python braucht ein Python-Binary}"; shift ;;
+        --container) container=1 ;;
+        --hostname) hostname_override="${2:?--hostname braucht einen Namen}"; shift ;;
+        --environment) environment="${2:?--environment braucht einen Wert}"; shift ;;
+        --app-name) app_name="${2:?--app-name braucht einen Namen}"; shift ;;
+        --app-version) app_version="${2:?--app-version braucht eine Version}"; shift ;;
+        --send-payload) send_payload="${2:?--send-payload braucht eine Datei}"; shift ;;
         -h|--help) usage; exit 0 ;;
         --version) echo "tum-system-report $VERSION"; exit 0 ;;
         *) echo "Unbekannte Option: $1" >&2; usage >&2; exit 2 ;;
@@ -286,8 +311,8 @@ usort($result, function ($a, $b) { return strcmp($a["name"] . "@" . $a["version"
 echo json_encode(array_slice($result, 0, 3000), JSON_UNESCAPED_SLASHES);
 '
 
-# Setzt $packages_json (oder lässt es leer); Fehler landen in $errors.
-packages_json=""
+# Setzt $composer_json (oder lässt es leer); Fehler landen in $errors.
+composer_json=""
 
 composer_value() {
     local output err_file line
@@ -308,37 +333,111 @@ composer_value() {
     done < "$err_file"
     rm -f "$err_file"
     case "$output" in
-        '['*']') [ "$output" != "[]" ] && packages_json="$(json_obj composer "$output")" ;;
+        '['*']') [ "$output" != "[]" ] && composer_json="$output" ;;
+    esac
+    return 0
+}
+
+# --- Python ------------------------------------------------------------
+
+# Läuft mit -I (ohne Benutzer-site-packages, PYTHON*-Variablen und das
+# aktuelle Verzeichnis): gemeldet wird, was dieses Python importieren würde.
+# Zeile 1: Laufzeit, Zeile 2: Pakete [{"name","version"}]. Je Name nur die
+# erste Fundstelle auf sys.path — die, die tatsächlich geladen wird.
+# Bewusst ohne neuere Syntax: ab Python 3.8 (importlib.metadata).
+PYTHON_EXTRACT='
+import json, platform, re
+from importlib import metadata
+seen = {}
+for dist in metadata.distributions():
+    try:
+        name = dist.metadata["Name"]
+        version = dist.version
+    except Exception:
+        continue
+    if not isinstance(name, str) or not isinstance(version, str) or not name or not version:
+        continue
+    if len(name) > 214 or len(version) > 64:
+        continue
+    key = re.sub(r"[-_.]+", "-", name).lower()
+    if key not in seen:
+        seen[key] = {"name": name, "version": version}
+packages = sorted(seen.values(), key=lambda p: (p["name"].lower(), p["version"]))[:3000]
+print(json.dumps({"version": platform.python_version(), "implementation": platform.python_implementation()}, separators=(",", ":")))
+print(json.dumps(packages, separators=(",", ":")))
+'
+
+# Setzen $python_runtime_json und $pypi_json; Fehler landen in $errors.
+python_runtime_json=""
+pypi_json=""
+
+python_value() {
+    local output runtime packages
+    [ -z "$python_bin" ] && return 0
+    if ! command -v "$python_bin" >/dev/null 2>&1; then
+        errors+=("packages.pypi: python not found")
+        return 0
+    fi
+    if ! output="$("$python_bin" -I -c "$PYTHON_EXTRACT" 2>/dev/null)"; then
+        errors+=("packages.pypi: python failed")
+        return 0
+    fi
+    runtime="$(printf '%s\n' "$output" | sed -n 1p)"
+    packages="$(printf '%s\n' "$output" | sed -n 2p)"
+    case "$runtime" in '{'*'}') python_runtime_json="$runtime" ;; esac
+    case "$packages" in
+        '['*']') [ "$packages" != "[]" ] && pypi_json="$packages" ;;
+        *) errors+=("packages.pypi: unreadable output") ;;
     esac
     return 0
 }
 
 build_payload() {
-    local reported_at os_obj instance_obj reporter_obj errors_json="" e capabilities
+    local reported_at os_obj instance_obj reporter_obj app_obj runtime_obj errors_json="" e capabilities
+    local kernel="" uptime="" packages_json
 
     reported_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-    patch_value
+    capabilities='"os"'
+    if [ "$container" -eq 0 ]; then
+        patch_value
+        capabilities="$capabilities,\"os_patch\""
+        kernel="$(json_str_max "$(uname -r 2>/dev/null || true)" 100)"
+        uptime="$(json_int "$(uptime_value)")"
+    fi
     composer_value
-    capabilities='["os","os_patch"]'
-    [ "${#composer_dirs[@]}" -gt 0 ] && capabilities='["os","os_patch","packages"]'
+    python_value
+    [ -n "$python_runtime_json" ] && capabilities="$capabilities,\"runtime\""
+    if [ "${#composer_dirs[@]}" -gt 0 ] || [ -n "$python_bin" ]; then
+        capabilities="$capabilities,\"packages\""
+    fi
+    [ "$container" -eq 1 ] && capabilities="$capabilities,\"container\""
 
     os_obj="$(json_obj \
         family '"Linux"' \
         id "$(json_str_max "$(os_release_value ID)" 50)" \
         version_id "$(json_str_max "$(os_release_value VERSION_ID)" 50)" \
         pretty_name "$(json_str_max "$(os_release_value PRETTY_NAME)" 150)" \
-        kernel "$(json_str_max "$(uname -r 2>/dev/null || true)" 100)" \
+        kernel "$kernel" \
         machine "$(json_str_max "$(uname -m 2>/dev/null || true)" 30)" \
-        uptime_s "$(json_int "$(uptime_value)")" \
+        uptime_s "$uptime" \
         patch "$patch_json")"
 
-    instance_obj="$(json_obj hostname "$(json_str_max "$(hostname_value)" 255)")"
+    instance_obj="$(json_obj \
+        hostname "$(json_str_max "${hostname_override:-$(hostname_value)}" 255)" \
+        environment "$(json_str_max "$environment" 20)")"
+    app_obj="$(json_obj name "$(json_str_max "$app_name" 150)" version "$(json_str_max "$app_version" 64)")"
+    [ "$app_obj" = "{}" ] && app_obj=""
+    runtime_obj=""
+    [ -n "$python_runtime_json" ] && runtime_obj="$(json_obj python "$python_runtime_json")"
+
+    packages_json="$(json_obj composer "$composer_json" pypi "$pypi_json")"
+    [ "$packages_json" = "{}" ] && packages_json=""
 
     reporter_obj="$(json_obj \
         name '"tum/system-report.sh"' \
         version "$(json_str "$VERSION")" \
         context '"cli"' \
-        capabilities "$capabilities")"
+        capabilities "[$capabilities]")"
 
     for e in "${errors[@]+"${errors[@]}"}"; do
         [ -z "$e" ] && continue
@@ -350,6 +449,8 @@ build_payload() {
         reported_at "$(json_str "$reported_at")" \
         reporter "$reporter_obj" \
         instance "$instance_obj" \
+        app "$app_obj" \
+        runtime "$runtime_obj" \
         os "$os_obj" \
         packages "$packages_json" \
         collect_errors "${errors_json:+[$errors_json]}"
@@ -378,8 +479,23 @@ is_safe_url() {
 
 # --- Ablauf --------------------------------------------------------------
 
-# Eine Subshell für alles: patch_value und die Fehlerliste teilen sie sich.
-payload="$(build_payload)"
+if [ -n "$send_payload" ]; then
+    if [ "$send_payload" = "-" ]; then
+        payload="$(cat)"
+    elif [ -r "$send_payload" ]; then
+        payload="$(cat "$send_payload")"
+    else
+        echo "Payload-Datei nicht lesbar: $send_payload" >&2
+        exit 2
+    fi
+    case "$payload" in
+        '{'*'}') ;;
+        *) echo "Payload ist kein JSON-Objekt." >&2; exit 2 ;;
+    esac
+else
+    # Eine Subshell für alles: patch_value und die Fehlerliste teilen sie sich.
+    payload="$(build_payload)"
+fi
 
 if [ "$dry_run" -eq 1 ]; then
     printf '%s\n' "$payload"
