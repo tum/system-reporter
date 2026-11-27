@@ -112,4 +112,47 @@ class OsCollectorTest extends TestCase
         $this->assertArrayNotHasKey('patch', $os);
         $this->assertSame([], $errors->all());
     }
+
+    public function test_debian_point_release_from_debian_version(): void
+    {
+        $root = $this->root();
+        file_put_contents($root.'/etc/debian_version', "12.8\n");
+
+        $os = (new OsCollector($this->runner(null), $root))->collect(new ErrorBag, false);
+
+        $this->assertSame('12', $os['version_id']);
+        $this->assertSame('12.8', $os['point_release']);
+    }
+
+    public function test_debian_testing_has_no_point_release(): void
+    {
+        $root = $this->root();
+        file_put_contents($root.'/etc/debian_version', "trixie/sid\n");
+
+        $os = (new OsCollector($this->runner(null), $root))->collect(new ErrorBag, false);
+
+        $this->assertArrayNotHasKey('point_release', $os);
+    }
+
+    public function test_ubuntu_point_release_from_version(): void
+    {
+        $root = $this->root();
+        file_put_contents($root.'/etc/os-release', "ID=ubuntu\nVERSION_ID=\"24.04\"\nVERSION=\"24.04.3 LTS (Noble Numbat)\"\n");
+        // Ubuntu hat auch /etc/debian_version ("trixie/sid") — darf nicht zählen.
+        file_put_contents($root.'/etc/debian_version', "trixie/sid\n");
+
+        $os = (new OsCollector($this->runner(null), $root))->collect(new ErrorBag, false);
+
+        $this->assertSame('24.04.3', $os['point_release']);
+    }
+
+    public function test_other_distributions_have_no_point_release(): void
+    {
+        $root = $this->root();
+        file_put_contents($root.'/etc/os-release', "ID=rocky\nVERSION_ID=\"9.4\"\nVERSION=\"9.4 (Blue Onyx)\"\n");
+
+        $os = (new OsCollector($this->runner(null), $root))->collect(new ErrorBag, false);
+
+        $this->assertArrayNotHasKey('point_release', $os);
+    }
 }

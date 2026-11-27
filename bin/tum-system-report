@@ -32,7 +32,7 @@
 
 set -euo pipefail
 
-VERSION="2.3.0"
+VERSION="2.4.0"
 SCHEMA="tum.system-report/v2"
 DEFAULT_URL="https://portal.it.tum.de/interface/systems/report"
 
@@ -140,6 +140,20 @@ os_release_value() {
     line="${line%\"}"
     line="${line#\"}"
     printf '%s' "$line"
+}
+
+# Patchstand der Distribution (13.8, 24.04.3); VERSION_ID kennt nur den
+# Zyklus. Debian: /etc/debian_version (auf testing/sid "trixie/sid" → nichts),
+# Ubuntu: VERSION aus os-release ("24.04.3 LTS (Noble Numbat)").
+point_release_value() {
+    local value=""
+    case "$(os_release_value ID)" in
+        debian) [ -r "$ROOT/etc/debian_version" ] && value="$(head -n1 "$ROOT/etc/debian_version")" ;;
+        ubuntu) value="$(os_release_value VERSION)" ;;
+    esac
+    if [[ "$value" =~ ^([0-9]+(\.[0-9]+){1,2})([[:space:]]|$) ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+    fi
 }
 
 hostname_value() {
@@ -416,6 +430,7 @@ build_payload() {
         family '"Linux"' \
         id "$(json_str_max "$(os_release_value ID)" 50)" \
         version_id "$(json_str_max "$(os_release_value VERSION_ID)" 50)" \
+        point_release "$(json_str_max "$(point_release_value)" 30)" \
         pretty_name "$(json_str_max "$(os_release_value PRETTY_NAME)" 150)" \
         kernel "$kernel" \
         machine "$(json_str_max "$(uname -m 2>/dev/null || true)" 30)" \

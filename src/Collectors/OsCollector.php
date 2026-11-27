@@ -46,6 +46,10 @@ class OsCollector
                     $os[$field] = mb_substr($m[1], 0, $field === 'pretty_name' ? 150 : 50);
                 }
             }
+            $point = $this->pointRelease($os['id'] ?? null, $release);
+            if ($point !== null) {
+                $os['point_release'] = $point;
+            }
         }
 
         $uptime = @file_get_contents($this->root.'/proc/uptime');
@@ -58,6 +62,26 @@ class OsCollector
         }
 
         return $os;
+    }
+
+    /**
+     * Patchstand der Distribution (13.8, 24.04.3) — VERSION_ID enthält nur
+     * den Zyklus (13, 24.04), damit kann das Portal nicht erkennen, ob ein
+     * Point-Release fehlt.
+     *
+     * Debian: /etc/debian_version; auf testing/sid steht dort "trixie/sid"
+     * und es wird nichts gemeldet. Ubuntu: VERSION aus os-release
+     * ("24.04.3 LTS (Noble Numbat)").
+     */
+    private function pointRelease(?string $osId, string $release): ?string
+    {
+        $value = match ($osId) {
+            'debian' => trim((string) @file_get_contents($this->root.'/etc/debian_version')),
+            'ubuntu' => preg_match('/^VERSION="?([^"\n]*)"?$/m', $release, $m) ? $m[1] : '',
+            default => '',
+        };
+
+        return preg_match('/^(\d+(?:\.\d+){1,2})(?:\s|$)/', $value, $m) ? $m[1] : null;
     }
 
     /**
