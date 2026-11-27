@@ -21,7 +21,7 @@ class ServerScriptTest extends TestCase
         foreach (['etc', 'proc', 'var/run', 'var/log/apt', 'usr/share/update-notifier', 'bin'] as $dir) {
             mkdir($this->root.'/'.$dir, 0777, true);
         }
-        file_put_contents($this->root.'/etc/os-release', "PRETTY_NAME=\"Ubuntu 24.04.1 LTS \\\"Noble\\\"\"\nID=ubuntu\nVERSION_ID=\"24.04\"\n");
+        file_put_contents($this->root.'/etc/os-release', "PRETTY_NAME=\"Ubuntu 24.04.1 LTS \\\"Noble\\\"\"\nID=ubuntu\nVERSION_ID=\"24.04\"\nVERSION=\"24.04.1 LTS (Noble Numbat)\"\n");
         file_put_contents($this->root.'/etc/hostname', "web01.example.tum.de\n");
         file_put_contents($this->root.'/proc/uptime', "86400.55 1000.00\n");
         touch($this->root.'/var/run/reboot-required');
@@ -71,6 +71,7 @@ class ServerScriptTest extends TestCase
         $this->assertSame('web01.example.tum.de', $payload['instance']['hostname']);
         $this->assertSame('ubuntu', $payload['os']['id']);
         $this->assertSame('24.04', $payload['os']['version_id']);
+        $this->assertSame('24.04.1', $payload['os']['point_release']);
         $this->assertSame('Ubuntu 24.04.1 LTS \"Noble\"', $payload['os']['pretty_name'], 'Anführungszeichen werden escaped');
         $this->assertSame(86400, $payload['os']['uptime_s']);
         $this->assertSame([
@@ -82,6 +83,18 @@ class ServerScriptTest extends TestCase
         ], $payload['os']['patch']);
         $this->assertMatchesRegularExpression('/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/', $payload['reported_at']);
         $this->assertArrayNotHasKey('collect_errors', $payload);
+    }
+
+    public function test_debian_point_release_and_testing_without_one(): void
+    {
+        file_put_contents($this->root.'/etc/os-release', "ID=debian\nVERSION_ID=\"13\"\n");
+        file_put_contents($this->root.'/etc/debian_version', "13.8\n");
+        $payload = json_decode($this->runScript(['--dry-run'])['stdout'], true, 512, JSON_THROW_ON_ERROR);
+        $this->assertSame('13.8', $payload['os']['point_release']);
+
+        file_put_contents($this->root.'/etc/debian_version', "trixie/sid\n");
+        $payload = json_decode($this->runScript(['--dry-run'])['stdout'], true, 512, JSON_THROW_ON_ERROR);
+        $this->assertArrayNotHasKey('point_release', $payload['os']);
     }
 
     public function test_failing_package_manager_is_reported_as_collect_error(): void

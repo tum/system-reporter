@@ -21,7 +21,7 @@ Einmal täglich ein Heartbeat im Format `tum.system-report/v2`:
 | `instance` | Hostname, `APP_ENV`, `APP_URL` |
 | `app` | Name, Version (`APP_VERSION` oder Commit aus `.git`), Laravel-Version, Fingerprint von `vendor/composer/installed.json` und `package-lock.json`, offene Migrationen |
 | `runtime` | PHP-Version, SAPI und Extensions; Datenbank (Produkt + Version, MariaDB normalisiert); OpenSSL, cURL, ICU; `web_php`: PHP-Version im Web-Kontext |
-| `os` | `/etc/os-release`, Kernel, Uptime; `patch`: ausstehende Updates und Sicherheitsupdates (`apt-get -s dist-upgrade`, zählt auch neue Kernel-Pakete), Neustart nötig (`null` = unbekannt, wenn das System keinen update-notifier hat), letztes Update |
+| `os` | `/etc/os-release`, Patchstand der Distribution (`point_release`: Debian aus `/etc/debian_version`, Ubuntu aus `VERSION`, z. B. `13.8`, `24.04.3`), Kernel, Uptime; `patch`: ausstehende Updates und Sicherheitsupdates (`apt-get -s dist-upgrade`, zählt auch neue Kernel-Pakete), Neustart nötig (`null` = unbekannt, wenn das System keinen update-notifier hat), letztes Update |
 | `signals` | `debug`, `https`, `secure_cookie`; aus dem Web-Kontext zusätzlich `display_errors`, `expose_php` (Werte aus der php.ini) |
 | `packages` | installierte Produktionspakete, nur Name und Version: `composer` aus `vendor/composer/installed.json` (ohne dev), `npm` aus `package-lock.json` (ohne dev). Das Portal gleicht sie mit [OSV](https://osv.dev) ab |
 | `collect_errors` | was nicht auslesbar war, z. B. `os.patch: exec disabled` |
@@ -218,6 +218,14 @@ unterstützt: Die Linie ist EOL, und Composer blockiert alle 11.x-Versionen
 wegen offener Sicherheitslücken.
 
 ## Änderungen
+
+### 2.4.0
+
+- `os.point_release`: Patchstand der Distribution (Debian `13.8` aus
+  `/etc/debian_version`, Ubuntu `24.04.3` aus `VERSION` in os-release).
+  `version_id` enthält nur den Zyklus; erst damit erkennt das Portal ein
+  fehlendes Point-Release. Gilt für das Laravel-Paket und `bin/tum-system-report`
+  (auch mit `--container`)
 
 ### 2.3.0
 
